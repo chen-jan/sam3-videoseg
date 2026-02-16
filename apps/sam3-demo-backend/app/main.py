@@ -1,0 +1,328 @@
+from __future__ import annotations
+
+import uuid
+from pathlib import Path
+
+from fastapi import HTTPException, FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from pydantic import ValidationError
+
+from app.config import Settings, ensure_directories
+from app.errors import ErrorCode, http_error
+from app.models import (
+    ClickPromptRequest,
+    CreateObjectResponse,
+    OperationResponse,
+    PromptResponse,
+    PropagationStartMessage,
+    TextPromptRequest,
+    UploadResponse,
+)
+from app.sam3_service import Sam3Service
+from app.session_store import SessionRecord, SessionStore
+from app.video_io import (
+    ALLOWED_VIDEO_EXTS,
+    cleanup_path,
+    compute_processing_fps,
+    count_extracted_frames,
+    extract_frames,
+    get_frame_path,
+    is_duration_allowed,
+    probe_video,
+    save_upload_file,
+)
+
+
+settings = Settings()
+ensure_directories(settings)
+session_store = SessionStore()
+sam3_service = Sam3Service(session_store=session_store)
+
+app = FastAPI(title="SAM3 Demo Backend", version="0.1.0")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def _require_session(session_id: str) -> SessionRecord:
+    try:
+        return session_store.require(session_id)
+    except KeyError:
+        raise http_error(404, ErrorCode.SESSION_NOT_FOUND, "Session not found")
+
+
+def _validate_frame_index(record: SessionRecord, frame_index: int) -> None:
+    if frame_index < 0 or frame_index >= record.num_frames:
+        raise http_error(
+            400,
+            ErrorCode.INVALID_FRAME_INDEX,
+            f"frame_index must be in [0, {record.num_frames - 1}]",
+        )
+
+
+def _validate_points(points: list[tuple[float, float, int]]) -> None:
+    for x, y, label in points:
+        if not (0.0 <= x <= 1.0 and 0.0 <= y <= 1.0):
+            raise http_error(
+                400,
+                ErrorCode.INVALID_POINT,
+                "Point coordinates must be normalized between 0 and 1",
+            )
+        if label not in (0, 1):
+            raise http_error(
+                400,
+                ErrorCode.INVALID_POINT,
+                "Point label must be either 0 (negative) or 1 (positive)",
+            )
+
+
+def _cleanup_active_session() -> None:
+    active = session_store.get_active()
+    if active is None:
+        return
+    try:
+        sam3_service.close_session(active.session_id)
+    except Exception:
+        pass
+    cleanup_path(active.upload_path)
+    cleanup_path(active.frames_dir)
+    session_store.clear_active()
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    if settings.load_model_on_startup:
+        sam3_service.load_predictor()
+
+
+@app.get("/api/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.post("/api/videos/upload", response_model=UploadResponse)
+async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
+    filename = file.filename or "upload.mp4"
+    ext = Path(filename).suffix.lower() or ".mp4"
+    if ext not in ALLOWED_VIDEO_EXTS:
+        raise http_error(
+            400,
+            ErrorCode.BAD_REQUEST,
+            f"Unsupported extension '{ext}'. Allowed: {sorted(ALLOWED_VIDEO_EXTS)}",
+        )
+
+    upload_path = settings.uploads_dir / f"{uuid.uuid4().hex}{ext}"
+    await save_upload_file(file, upload_path)
+
+    frames_dir: Path | None = None
+    try:
+        metadata = probe_video(upload_path)
+        if not is_duration_allowed(metadata.duration_sec, settings.max_duration_sec):
+            cleanup_path(upload_path)
+            raise http_error(
+                400,
+                ErrorCode.VIDEO_TOO_LONG,
+                f"Video duration {metadata.duration_sec:.2f}s exceeds max {settings.max_duration_sec:.2f}s",
+            )
+
+        processing_fps = compute_processing_fps(
+            source_fps=metadata.fps,
+            duration_sec=metadata.duration_sec,
+            max_frames=settings.max_frames,
+        )
+
+        _cleanup_active_session()
+
+        session_id = uuid.uuid4().hex
+        frames_dir = settings.frames_dir / session_id
+        extract_frames(
+            video_path=upload_path,
+            frames_dir=frames_dir,
+            processing_fps=processing_fps,
+            max_frames=settings.max_frames,
+        )
+
+        processing_num_frames = count_extracted_frames(frames_dir)
+        if processing_num_frames <= 0:
+            raise RuntimeError("No frames were extracted from video")
+
+        actual_session_id = sam3_service.start_session(
+            session_id=session_id,
+            resource_path=frames_dir,
+        )
+
+        record = SessionRecord(
+            session_id=actual_session_id,
+            upload_path=upload_path,
+            frames_dir=frames_dir,
+            num_frames=processing_num_frames,
+            width=metadata.width,
+            height=metadata.height,
+            source_fps=float(metadata.fps),
+            processing_fps=float(processing_fps),
+            source_duration_sec=float(metadata.duration_sec),
+        )
+        session_store.set_active(record)
+
+        return UploadResponse(
+            session_id=actual_session_id,
+            num_frames=processing_num_frames,
+            width=metadata.width,
+            height=metadata.height,
+            source_fps=float(metadata.fps),
+            processing_fps=float(processing_fps),
+            source_duration_sec=float(metadata.duration_sec),
+            processing_num_frames=processing_num_frames,
+        )
+    except HTTPException:
+        if frames_dir is not None:
+            cleanup_path(frames_dir)
+        raise
+    except Exception as exc:
+        if frames_dir is not None:
+            cleanup_path(frames_dir)
+        cleanup_path(upload_path)
+        raise http_error(
+            500,
+            ErrorCode.VIDEO_PROCESSING_FAILED,
+            f"Failed to process video: {exc}",
+        )
+
+
+@app.get("/api/sessions/{session_id}/frames/{frame_index}.jpg")
+def get_frame(session_id: str, frame_index: int):
+    record = _require_session(session_id)
+    _validate_frame_index(record, frame_index)
+    try:
+        frame_path = get_frame_path(record.frames_dir, frame_index)
+    except FileNotFoundError:
+        raise http_error(
+            404, ErrorCode.INVALID_FRAME_INDEX, "Frame image not found on disk"
+        )
+    return FileResponse(str(frame_path), media_type="image/jpeg")
+
+
+@app.post("/api/sessions/{session_id}/prompt/text", response_model=PromptResponse)
+def add_text_prompt(session_id: str, req: TextPromptRequest) -> PromptResponse:
+    record = _require_session(session_id)
+    _validate_frame_index(record, req.frame_index)
+    text = req.text.strip()
+    if not text:
+        raise http_error(400, ErrorCode.BAD_REQUEST, "Text prompt cannot be empty")
+
+    frame_index, objects = sam3_service.add_text_prompt(
+        session_id=session_id,
+        frame_index=req.frame_index,
+        text=text,
+        reset_first=req.reset_first,
+    )
+    return PromptResponse(frame_index=frame_index, objects=objects)
+
+
+@app.post("/api/sessions/{session_id}/objects", response_model=CreateObjectResponse)
+def create_object(session_id: str) -> CreateObjectResponse:
+    _require_session(session_id)
+    obj_id = session_store.next_user_obj_id(session_id)
+    return CreateObjectResponse(obj_id=obj_id)
+
+
+@app.post("/api/sessions/{session_id}/prompt/clicks", response_model=PromptResponse)
+def add_click_prompt(session_id: str, req: ClickPromptRequest) -> PromptResponse:
+    record = _require_session(session_id)
+    _validate_frame_index(record, req.frame_index)
+    if len(req.points) == 0:
+        raise http_error(400, ErrorCode.BAD_REQUEST, "At least one point is required")
+
+    points = [(point.x, point.y, int(point.label)) for point in req.points]
+    _validate_points(points)
+
+    frame_index, objects = sam3_service.add_click_prompt(
+        session_id=session_id,
+        frame_index=req.frame_index,
+        obj_id=req.obj_id,
+        points=points,
+    )
+    return PromptResponse(frame_index=frame_index, objects=objects)
+
+
+@app.post("/api/sessions/{session_id}/objects/{obj_id}/remove", response_model=OperationResponse)
+def remove_object(session_id: str, obj_id: int) -> OperationResponse:
+    _require_session(session_id)
+    sam3_service.remove_object(session_id=session_id, obj_id=obj_id)
+    return OperationResponse(ok=True)
+
+
+@app.post("/api/sessions/{session_id}/reset", response_model=OperationResponse)
+def reset_session(session_id: str) -> OperationResponse:
+    _require_session(session_id)
+    sam3_service.reset_session(session_id)
+    return OperationResponse(ok=True)
+
+
+@app.delete("/api/sessions/{session_id}", response_model=OperationResponse)
+def delete_session(session_id: str) -> OperationResponse:
+    record = _require_session(session_id)
+    try:
+        sam3_service.close_session(session_id)
+    finally:
+        cleanup_path(record.upload_path)
+        cleanup_path(record.frames_dir)
+        session_store.clear_active()
+    return OperationResponse(ok=True)
+
+
+@app.websocket("/api/sessions/{session_id}/propagate")
+async def propagate(websocket: WebSocket, session_id: str) -> None:
+    await websocket.accept()
+    try:
+        record = _require_session(session_id)
+        start_raw = await websocket.receive_json()
+        start_msg = PropagationStartMessage.model_validate(start_raw)
+
+        if start_msg.start_frame_index is not None:
+            _validate_frame_index(record, start_msg.start_frame_index)
+
+        generation = session_store.bump_generation(session_id)
+        for frame_index, objects in sam3_service.stream_propagation(
+            session_id=session_id,
+            direction=start_msg.direction,
+            start_frame_index=start_msg.start_frame_index,
+            generation=generation,
+        ):
+            await websocket.send_json(
+                {
+                    "type": "propagation_frame",
+                    "frame_index": frame_index,
+                    "objects": objects,
+                }
+            )
+
+        await websocket.send_json({"type": "propagation_done"})
+    except WebSocketDisconnect:
+        return
+    except ValidationError as exc:
+        await websocket.send_json(
+            {
+                "type": "error",
+                "code": ErrorCode.BAD_REQUEST,
+                "message": f"Invalid websocket payload: {exc}",
+            }
+        )
+    except Exception as exc:
+        await websocket.send_json(
+            {
+                "type": "error",
+                "code": ErrorCode.BAD_REQUEST,
+                "message": str(exc),
+            }
+        )
+    finally:
+        try:
+            await websocket.close()
+        except RuntimeError:
+            pass

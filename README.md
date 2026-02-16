@@ -1,395 +1,456 @@
-# SAM 3: Segment Anything with Concepts
+# SAM3 Demo Workspace
 
-Meta Superintelligence Labs
+A monorepo wrapping Meta's **Segment Anything Model 3 (SAM3)** with an interactive web-based demo for real-time video segmentation. Upload a video, describe or click the objects you want to track, and watch SAM3 propagate masks across every frame.
 
-[Nicolas Carion](https://www.nicolascarion.com/)\*,
-[Laura Gustafson](https://scholar.google.com/citations?user=c8IpF9gAAAAJ&hl=en)\*,
-[Yuan-Ting Hu](https://scholar.google.com/citations?user=E8DVVYQAAAAJ&hl=en)\*,
-[Shoubhik Debnath](https://scholar.google.com/citations?user=fb6FOfsAAAAJ&hl=en)\*,
-[Ronghang Hu](https://ronghanghu.com/)\*,
-[Didac Suris](https://www.didacsuris.com/)\*,
-[Chaitanya Ryali](https://scholar.google.com/citations?user=4LWx24UAAAAJ&hl=en)\*,
-[Kalyan Vasudev Alwala](https://scholar.google.co.in/citations?user=m34oaWEAAAAJ&hl=en)\*,
-[Haitham Khedr](https://hkhedr.com/)\*, Andrew Huang,
-[Jie Lei](https://jayleicn.github.io/),
-[Tengyu Ma](https://scholar.google.com/citations?user=VeTSl0wAAAAJ&hl=en),
-[Baishan Guo](https://scholar.google.com/citations?user=BC5wDu8AAAAJ&hl=en),
-Arpit Kalla, [Markus Marks](https://damaggu.github.io/),
-[Joseph Greer](https://scholar.google.com/citations?user=guL96CkAAAAJ&hl=en),
-Meng Wang, [Peize Sun](https://peizesun.github.io/),
-[Roman Rädle](https://scholar.google.com/citations?user=Tpt57v0AAAAJ&hl=en),
-[Triantafyllos Afouras](https://www.robots.ox.ac.uk/~afourast/),
-[Effrosyni Mavroudi](https://scholar.google.com/citations?user=vYRzGGEAAAAJ&hl=en),
-[Katherine Xu](https://k8xu.github.io/)°,
-[Tsung-Han Wu](https://patrickthwu.com/)°,
-[Yu Zhou](https://yu-bryan-zhou.github.io/)°,
-[Liliane Momeni](https://scholar.google.com/citations?user=Lb-KgVYAAAAJ&hl=en)°,
-[Rishi Hazra](https://rishihazra.github.io/)°,
-[Shuangrui Ding](https://mark12ding.github.io/)°,
-[Sagar Vaze](https://sgvaze.github.io/)°,
-[Francois Porcher](https://scholar.google.com/citations?user=LgHZ8hUAAAAJ&hl=en)°,
-[Feng Li](https://fengli-ust.github.io/)°,
-[Siyuan Li](https://siyuanliii.github.io/)°,
-[Aishwarya Kamath](https://ashkamath.github.io/)°,
-[Ho Kei Cheng](https://hkchengrex.com/)°,
-[Piotr Dollar](https://pdollar.github.io/)†,
-[Nikhila Ravi](https://nikhilaravi.com/)†,
-[Kate Saenko](https://ai.bu.edu/ksaenko.html)†,
-[Pengchuan Zhang](https://pzzhang.github.io/pzzhang/)†,
-[Christoph Feichtenhofer](https://feichtenhofer.github.io/)†
+---
 
-\* core contributor, ° intern, † project lead, order is random within groups
+## Table of Contents
 
-[[`Paper`](https://ai.meta.com/research/publications/sam-3-segment-anything-with-concepts/)]
-[[`Project`](https://ai.meta.com/sam3)]
-[[`Demo`](https://segment-anything.com/)]
-[[`Blog`](https://ai.meta.com/blog/segment-anything-model-3/)]
-[[`BibTeX`](#citing-sam-3)]
+- [Repository Layout](#repository-layout)
+- [Architecture Overview](#architecture-overview)
+- [How It Works: End-to-End Data Flow](#how-it-works-end-to-end-data-flow)
+- [Backend (FastAPI)](#backend-fastapi)
+- [Frontend (Next.js)](#frontend-nextjs)
+- [Upstream SAM3 Model](#upstream-sam3-model)
+- [API Reference](#api-reference)
+- [Quick Start](#quick-start)
+- [Remote GPU Setup (Lambda Labs)](#remote-gpu-setup-lambda-labs)
+- [Configuration](#configuration)
+- [Current Limitations](#current-limitations)
+- [Production Roadmap](#production-roadmap)
 
-![SAM 3 architecture](assets/model_diagram.png?raw=true) SAM 3 is a unified foundation model for promptable segmentation in images and videos. It can detect, segment, and track objects using text or visual prompts such as points, boxes, and masks. Compared to its predecessor [SAM 2](https://github.com/facebookresearch/sam2), SAM 3 introduces the ability to exhaustively segment all instances of an open-vocabulary concept specified by a short text phrase or exemplars. Unlike prior work, SAM 3 can handle a vastly larger set of open-vocabulary prompts. It achieves 75-80% of human performance on our new [SA-CO benchmark](https://github.com/facebookresearch/sam3?tab=readme-ov-file#sa-co-dataset) which contains 270K unique concepts, over 50 times more than existing benchmarks.
+---
 
-This breakthrough is driven by an innovative data engine that has automatically annotated over 4 million unique concepts, creating the largest high-quality open-vocabulary segmentation dataset to date. In addition, SAM 3 introduces a new model architecture featuring a presence token that improves discrimination between closely related text prompts (e.g., “a player in white” vs. “a player in red”), as well as a decoupled detector–tracker design that minimizes task interference and scales efficiently with data.
+## Repository Layout
 
-<p align="center">
-  <img src="assets/dog.gif" width=380 />
-  <img src="assets/player.gif" width=380 />
-</p>
+```
+sam3/
+├── apps/
+│   ├── sam3-demo-backend/       # FastAPI backend — video processing, SAM3 inference, mask streaming
+│   │   ├── app/
+│   │   │   ├── main.py          # HTTP + WebSocket endpoints
+│   │   │   ├── sam3_service.py  # Wrapper bridging API requests to SAM3 predictor
+│   │   │   ├── session_store.py # In-memory single-session state with thread-safe locking
+│   │   │   ├── video_io.py      # FFmpeg/FFprobe: upload, probe, frame extraction
+│   │   │   ├── mask_codec.py    # COCO RLE encoding/decoding of binary masks
+│   │   │   ├── models.py        # Pydantic request/response schemas
+│   │   │   ├── config.py        # Environment-based settings
+│   │   │   └── errors.py        # Structured error codes
+│   │   ├── tests/               # pytest tests (mask codec, video policies)
+│   │   └── pyproject.toml
+│   │
+│   └── sam3-demo-frontend/      # Next.js 15 frontend — interactive canvas UI
+│       ├── src/
+│       │   ├── app/
+│       │   │   ├── page.tsx     # Main page: upload, state management, orchestration
+│       │   │   ├── layout.tsx   # Root layout
+│       │   │   └── globals.css
+│       │   ├── components/
+│       │   │   ├── VideoCanvas.tsx      # Canvas rendering of frames + mask overlays
+│       │   │   ├── PromptPanel.tsx      # Text input, click mode, propagation controls
+│       │   │   ├── ObjectList.tsx       # Object list with visibility/selection/removal
+│       │   │   ├── PlaybackControls.tsx # Play/pause and frame stepping
+│       │   │   └── FrameScrubber.tsx    # Timeline scrubber for frame seeking
+│       │   └── lib/
+│       │       ├── api.ts       # HTTP + WebSocket client functions
+│       │       └── types.ts     # TypeScript interfaces matching backend schemas
+│       ├── package.json
+│       └── tsconfig.json
+│
+├── docs/
+│   ├── demo-setup.md            # Detailed setup and deployment instructions
+│   └── production-architecture.md  # Multi-user production scaling blueprint
+│
+└── upstream/sam3-original/      # Untouched upstream SAM3 codebase
+    ├── sam3/                    # Model code, training, evaluation, agent
+    ├── examples/                # Jupyter notebooks (image, video, agent tasks)
+    ├── pyproject.toml
+    ├── README.md                # Original SAM3 README
+    └── LICENSE
+```
 
-## Installation
+The upstream SAM3 code is kept as-is in `upstream/sam3-original/`. The demo app lives entirely under `apps/` and imports SAM3 as an installed package.
+
+---
+
+## Architecture Overview
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                        User's Browser                            │
+│                                                                  │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────┐ │
+│  │ PromptPanel  │  │  ObjectList  │  │     VideoCanvas        │ │
+│  │ (text/click) │  │ (track list) │  │ (frame + mask overlay) │ │
+│  └──────┬───────┘  └──────┬───────┘  └────────────┬───────────┘ │
+│         │                 │                        │             │
+│  ┌──────┴─────────────────┴────────────────────────┘             │
+│  │  page.tsx — state manager (React hooks)                       │
+│  │  ┌─────────┐  ┌───────────┐  ┌────────────────┐              │
+│  │  │maskCache│  │objectsById│  │ currentFrame   │              │
+│  │  └─────────┘  └───────────┘  └────────────────┘              │
+│  └──────────────────────┬────────────────────────────────────────┘
+│                         │ HTTP + WebSocket
+└─────────────────────────┼────────────────────────────────────────┘
+                          │
+┌─────────────────────────▼────────────────────────────────────────┐
+│                    FastAPI Backend                                │
+│                                                                  │
+│  main.py ──► Routing + validation                                │
+│      │                                                           │
+│      ├──► video_io.py ──► FFmpeg (frame extraction, metadata)    │
+│      │                                                           │
+│      ├──► sam3_service.py ──► SAM3 Predictor                     │
+│      │        │                    │                             │
+│      │        │              ┌─────▼──────┐                      │
+│      │        │              │ SAM3 Model │                      │
+│      │        │              │  (848M)    │                      │
+│      │        │              │ GPU / CUDA │                      │
+│      │        │              └────────────┘                      │
+│      │        │                                                  │
+│      │        └──► mask_codec.py ──► COCO RLE encode/decode      │
+│      │                                                           │
+│      └──► session_store.py ──► In-memory session (1 at a time)   │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+**Key design decisions:**
+
+- **Separation of concerns** — The upstream ML model is never modified. `sam3_service.py` is the sole bridge translating HTTP/WS requests into SAM3 predictor calls.
+- **Single-session simplicity** — Only one active session exists at a time, stored in-memory. This avoids distributed state for the demo use case.
+- **Streaming propagation** — Mask propagation uses a WebSocket that yields results frame-by-frame, so the UI updates in real time rather than waiting for the full video to process.
+- **Generation tokens** — Each propagation gets a monotonic generation ID. If the user starts a new propagation, stale ones are detected and skipped.
+
+---
+
+## How It Works: End-to-End Data Flow
+
+### 1. Video Upload
+
+```
+User selects video file
+        │
+        ▼
+Frontend: uploadVideo() → POST /api/videos/upload (multipart)
+        │
+        ▼
+Backend:
+  ├─ Save file to disk
+  ├─ FFprobe: extract metadata (duration, fps, resolution)
+  ├─ Validate: duration ≤ 60s
+  ├─ Compute processing_fps = min(source_fps, max_frames / duration)
+  ├─ FFmpeg: extract frames at processing_fps → JPEG sequence
+  ├─ Initialize SAM3 predictor session on extracted frames
+  └─ Return: session_id, frame count, dimensions, fps info
+```
+
+The dynamic FPS calculation ensures the total frame count stays under the configurable cap (default 900), preventing memory issues on long or high-fps videos.
+
+### 2. Interactive Prompting
+
+**Text prompts** — Type a description like "dog" or "person in red shirt". SAM3's text encoder finds matching objects on the current frame.
+
+**Click prompts** — Click directly on the canvas. Left-click marks positive points (what to segment), right-click marks negative points (what to exclude). Multiple clicks refine the mask.
+
+```
+User enters "dog" on frame 0  (or clicks on an object)
+        │
+        ▼
+Frontend → POST /api/sessions/{id}/prompt/text (or /prompt/clicks)
+        │
+        ▼
+Backend:
+  ├─ sam3_service translates to SAM3 predictor request
+  ├─ SAM3 runs inference: vision encoder → detector → masks + scores
+  ├─ mask_codec encodes binary masks as COCO RLE
+  └─ Return: PromptResponse { frame_index, objects[] { obj_id, mask_rle, score, bbox } }
+        │
+        ▼
+Frontend:
+  ├─ Stores masks in maskCache[frame_index]
+  ├─ Registers new tracked objects in objectsById
+  └─ Renders colored semi-transparent mask overlay on canvas
+```
+
+### 3. Mask Propagation
+
+Once objects are prompted on one (or more) frames, propagation extends those masks across the entire video.
+
+```
+User clicks "Run Propagation"
+        │
+        ▼
+Frontend: openPropagationSocket() → WS /api/sessions/{id}/propagate
+        │
+        ▼
+Backend:
+  ├─ Bumps generation token (cancels any stale propagation)
+  ├─ Calls SAM3 tracker: propagate_in_video (forward / backward / both)
+  └─ For each frame:
+       ├─ Encode masks → COCO RLE
+       ├─ Send WebSocket message: { type: "propagation_frame", frame_index, objects[] }
+       └─ Check generation ID (stop if superseded)
+        │
+        ▼
+Frontend receives each frame:
+  ├─ Updates maskCache[frame_index]
+  ├─ Updates progress status bar
+  └─ Refreshes canvas if that frame is currently displayed
+        │
+        ▼
+Final message: { type: "propagation_done" }
+```
+
+### 4. Playback and Review
+
+After propagation completes, users can scrub the timeline or play through the video. Each frame's masks are already cached — the canvas reads from `maskCache[currentFrame]` and renders overlays instantly with no additional inference needed.
+
+---
+
+## Backend (FastAPI)
+
+### Module Breakdown
+
+| Module | Responsibility |
+|--------|----------------|
+| [main.py](apps/sam3-demo-backend/app/main.py) | All HTTP/WS endpoints, request validation, session lifecycle |
+| [sam3_service.py](apps/sam3-demo-backend/app/sam3_service.py) | Loads SAM3 predictor, translates API calls to model requests |
+| [session_store.py](apps/sam3-demo-backend/app/session_store.py) | Thread-safe single-session store with generation tracking |
+| [video_io.py](apps/sam3-demo-backend/app/video_io.py) | FFmpeg/FFprobe wrapper: save, probe, extract, count frames |
+| [mask_codec.py](apps/sam3-demo-backend/app/mask_codec.py) | Encode numpy masks to COCO RLE, decode back |
+| [models.py](apps/sam3-demo-backend/app/models.py) | Pydantic v2 schemas for all request/response payloads |
+| [config.py](apps/sam3-demo-backend/app/config.py) | `Settings` class reading from environment variables |
+| [errors.py](apps/sam3-demo-backend/app/errors.py) | Typed error codes (`SESSION_NOT_FOUND`, `VIDEO_TOO_LONG`, etc.) |
+
+### Session Lifecycle
+
+1. **Upload** creates a new session (auto-cleans any previous one)
+2. **Prompt** (text or clicks) adds objects to the session's SAM3 state
+3. **Propagate** streams masks for all tracked objects across frames
+4. **Reset** clears masks/objects but keeps the video loaded
+5. **Delete** fully removes the session, upload file, and extracted frames
+
+---
+
+## Frontend (Next.js)
+
+### Component Breakdown
+
+| Component | Responsibility |
+|-----------|----------------|
+| [page.tsx](apps/sam3-demo-frontend/src/app/page.tsx) | Root state manager — session, frames, masks, objects, playback |
+| [VideoCanvas.tsx](apps/sam3-demo-frontend/src/components/VideoCanvas.tsx) | Renders video frame on `<canvas>` with colored mask overlays |
+| [PromptPanel.tsx](apps/sam3-demo-frontend/src/components/PromptPanel.tsx) | Text input, click mode toggle, propagation/reset buttons |
+| [ObjectList.tsx](apps/sam3-demo-frontend/src/components/ObjectList.tsx) | Lists tracked objects; toggle visibility, select, remove |
+| [PlaybackControls.tsx](apps/sam3-demo-frontend/src/components/PlaybackControls.tsx) | Play/pause, previous/next frame buttons |
+| [FrameScrubber.tsx](apps/sam3-demo-frontend/src/components/FrameScrubber.tsx) | Range slider for direct frame seeking |
+
+### State Management
+
+All state lives in React hooks within `page.tsx`:
+
+- **`session`** — Current `UploadResponse` (session ID, dimensions, frame count)
+- **`maskCache`** — `Record<frame_index, ObjectOutput[]>` caching decoded masks per frame
+- **`objectsById`** — `Record<obj_id, TrackedObject>` with color, visibility, label
+- **`currentFrame`** — Which frame is displayed on the canvas
+- **`selectedObjId`** — Which object receives click prompts
+- **`clickMode`** — `"positive"` or `"negative"` for click label
+
+### Mask Rendering
+
+Masks arrive as COCO RLE (run-length encoded, Fortran column-major order). The frontend:
+
+1. Decompresses RLE counts into a binary array
+2. Converts from column-major to row-major order
+3. Paints each `1` pixel with the object's assigned color at ~40% opacity
+4. Overlays on top of the JPEG video frame
+
+A 12-color palette ensures visually distinct objects.
+
+---
+
+## Upstream SAM3 Model
+
+SAM3 (Segment Anything Model 3) is Meta's unified foundation model for promptable segmentation. Key facts:
+
+- **848M parameters** — ViT-based vision encoder (1024-dim, 32 layers) with RoPE attention
+- **Multi-modal prompting** — Supports text descriptions, point clicks, bounding boxes, and masks
+- **Open-vocabulary** — Can segment 270K+ unique concepts
+- **Unified detector + tracker** — Shared vision encoder with decoupled heads for images and video
+- **Presence token** — Discriminates between closely related prompts ("player in white" vs. "player in red")
+
+The demo uses `build_sam3_video_predictor()` which provides:
+- `handle_request()` — Single-frame inference (text or click prompts)
+- `handle_stream_request()` — Multi-frame propagation (yields frame-by-frame results)
+
+For the full model documentation, training instructions, and evaluation benchmarks, see [upstream/sam3-original/README.md](upstream/sam3-original/README.md).
+
+---
+
+## API Reference
+
+### REST Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/health` | Health check |
+| `POST` | `/api/videos/upload` | Upload video (multipart), returns session info |
+| `GET` | `/api/sessions/{id}/frames/{index}.jpg` | Serve extracted frame as JPEG |
+| `POST` | `/api/sessions/{id}/prompt/text` | Add text prompt on a frame |
+| `POST` | `/api/sessions/{id}/prompt/clicks` | Add click prompt(s) for an object |
+| `POST` | `/api/sessions/{id}/objects` | Create a new empty object (for click prompting) |
+| `POST` | `/api/sessions/{id}/objects/{obj_id}/remove` | Remove a tracked object |
+| `POST` | `/api/sessions/{id}/reset` | Clear all masks and objects |
+| `DELETE` | `/api/sessions/{id}` | Delete session and all artifacts |
+
+### WebSocket
+
+| Path | Description |
+|------|-------------|
+| `WS /api/sessions/{id}/propagate` | Stream mask propagation frame-by-frame |
+
+**Propagation protocol:**
+
+```jsonc
+// Client sends:
+{ "action": "start", "direction": "both" }  // "forward", "backward", or "both"
+
+// Server streams:
+{ "type": "propagation_frame", "frame_index": 0, "objects": [...] }
+{ "type": "propagation_frame", "frame_index": 1, "objects": [...] }
+// ...
+{ "type": "propagation_done" }
+```
+
+### Key Schemas
+
+```typescript
+// Upload response
+{ session_id, num_frames, width, height, source_fps, processing_fps, source_duration_sec }
+
+// Prompt response
+{ frame_index, objects: [{ obj_id, score, bbox_xywh, mask_rle: { size, counts } }] }
+
+// Click prompt request
+{ frame_index, obj_id, points: [{ x, y, label }] }  // x,y normalized [0,1]; label: 1=pos, 0=neg
+
+// Text prompt request
+{ frame_index, text, reset_first }
+```
+
+---
+
+## Quick Start
 
 ### Prerequisites
 
-- Python 3.12 or higher
-- PyTorch 2.7 or higher
-- CUDA-compatible GPU with CUDA 12.6 or higher
+- Python 3.10+
+- Node.js 20+
+- `ffmpeg` and `ffprobe` in your `PATH`
+- CUDA GPU for real inference (CPU will be very slow)
 
-1. **Create a new Conda environment:**
+### Install and Run
 
-```bash
-conda create -n sam3 python=3.12
-conda deactivate
-conda activate sam3
-```
-
-2. **Install PyTorch with CUDA support:**
+**Backend** (from repo root):
 
 ```bash
-pip install torch==2.7.0 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu126
+pip install -e upstream/sam3-original
+pip install -e apps/sam3-demo-backend
+
+uvicorn app.main:app \
+  --app-dir apps/sam3-demo-backend \
+  --host 0.0.0.0 \
+  --port 8000
 ```
 
-3. **Clone the repository and install the package:**
+**Frontend** (in a second terminal):
 
 ```bash
-git clone https://github.com/facebookresearch/sam3.git
-cd sam3
-pip install -e .
+cd apps/sam3-demo-frontend
+npm install
+NEXT_PUBLIC_BACKEND_URL=http://localhost:8000 npm run dev
 ```
 
-4. **Install additional dependencies for example notebooks or development:**
+Open [http://localhost:3000](http://localhost:3000).
+
+---
+
+## Remote GPU Setup (Lambda Labs)
+
+When running on a remote GPU VM without a public IP, use SSH tunneling:
+
+**On the VM:**
 
 ```bash
-# For running example notebooks
-pip install -e ".[notebooks]"
+cd ~/sam3
+pip install -e upstream/sam3-original
+pip install -e apps/sam3-demo-backend
 
-# For development
-pip install -e ".[train,dev]"
+uvicorn app.main:app \
+  --app-dir apps/sam3-demo-backend \
+  --host 127.0.0.1 \
+  --port 8000
 ```
 
-## Getting Started
-
-⚠️ Before using SAM 3, please request access to the checkpoints on the SAM 3
-Hugging Face [repo](https://huggingface.co/facebook/sam3). Once accepted, you
-need to be authenticated to download the checkpoints. You can do this by running
-the following [steps](https://huggingface.co/docs/huggingface_hub/en/quick-start#authentication)
-(e.g. `hf auth login` after generating an access token.)
-
-### Basic Usage
-
-```python
-import torch
-#################################### For Image ####################################
-from PIL import Image
-from sam3.model_builder import build_sam3_image_model
-from sam3.model.sam3_image_processor import Sam3Processor
-# Load the model
-model = build_sam3_image_model()
-processor = Sam3Processor(model)
-# Load an image
-image = Image.open("<YOUR_IMAGE_PATH.jpg>")
-inference_state = processor.set_image(image)
-# Prompt the model with text
-output = processor.set_text_prompt(state=inference_state, prompt="<YOUR_TEXT_PROMPT>")
-
-# Get the masks, bounding boxes, and scores
-masks, boxes, scores = output["masks"], output["boxes"], output["scores"]
-
-#################################### For Video ####################################
-
-from sam3.model_builder import build_sam3_video_predictor
-
-video_predictor = build_sam3_video_predictor()
-video_path = "<YOUR_VIDEO_PATH>" # a JPEG folder or an MP4 video file
-# Start a session
-response = video_predictor.handle_request(
-    request=dict(
-        type="start_session",
-        resource_path=video_path,
-    )
-)
-response = video_predictor.handle_request(
-    request=dict(
-        type="add_prompt",
-        session_id=response["session_id"],
-        frame_index=0, # Arbitrary frame index
-        text="<YOUR_TEXT_PROMPT>",
-    )
-)
-output = response["outputs"]
-```
-
-## Examples
-
-The `examples` directory contains notebooks demonstrating how to use SAM3 with
-various types of prompts:
-
-- [`sam3_image_predictor_example.ipynb`](examples/sam3_image_predictor_example.ipynb)
-  : Demonstrates how to prompt SAM 3 with text and visual box prompts on images.
-- [`sam3_video_predictor_example.ipynb`](examples/sam3_video_predictor_example.ipynb)
-  : Demonstrates how to prompt SAM 3 with text prompts on videos, and doing
-  further interactive refinements with points.
-- [`sam3_image_batched_inference.ipynb`](examples/sam3_image_batched_inference.ipynb)
-  : Demonstrates how to run batched inference with SAM 3 on images.
-- [`sam3_agent.ipynb`](examples/sam3_agent.ipynb): Demonsterates the use of SAM
-  3 Agent to segment complex text prompt on images.
-- [`saco_gold_silver_vis_example.ipynb`](examples/saco_gold_silver_vis_example.ipynb)
-  : Shows a few examples from SA-Co image evaluation set.
-- [`saco_veval_vis_example.ipynb`](examples/saco_veval_vis_example.ipynb) :
-  Shows a few examples from SA-Co video evaluation set.
-
-There are additional notebooks in the examples directory that demonstrate how to
-use SAM 3 for interactive instance segmentation in images and videos (SAM 1/2
-tasks), or as a tool for an MLLM, and how to run evaluations on the SA-Co
-dataset.
-
-To run the Jupyter notebook examples:
+**On your laptop:**
 
 ```bash
-# Make sure you have the notebooks dependencies installed
-pip install -e ".[notebooks]"
-
-# Start Jupyter notebook
-jupyter notebook examples/sam3_image_predictor_example.ipynb
+ssh -L 8000:localhost:8000 ubuntu@<lambda-ip>
 ```
 
-## Model
+Then run the frontend locally pointing at `http://localhost:8000` (same as Quick Start).
 
-SAM 3 consists of a detector and a tracker that share a vision encoder. It has 848M parameters. The
-detector is a DETR-based model conditioned on text, geometry, and image
-exemplars. The tracker inherits the SAM 2 transformer encoder-decoder
-architecture, supporting video segmentation and interactive refinement.
+---
 
-## Image Results
+## Configuration
 
-<div align="center">
-<table style="min-width: 80%; border: 2px solid #ddd; border-collapse: collapse">
-  <thead>
-    <tr>
-      <th rowspan="3" style="border-right: 2px solid #ddd; padding: 12px 20px">Model</th>
-      <th colspan="3" style="text-align: center; border-right: 2px solid #ddd; padding: 12px 20px">Instance Segmentation</th>
-      <th colspan="5" style="text-align: center; padding: 12px 20px">Box Detection</th>
-    </tr>
-    <tr>
-      <th colspan="2" style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">LVIS</th>
-      <th style="text-align: center; border-right: 2px solid #ddd; padding: 12px 20px">SA-Co/Gold</th>
-      <th colspan="2" style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">LVIS</th>
-      <th colspan="2" style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">COCO</th>
-      <th style="text-align: center; padding: 12px 20px">SA-Co/Gold</th>
-    </tr>
-    <tr>
-      <th style="text-align: center; padding: 12px 20px">cgF1</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">AP</th>
-      <th style="text-align: center; border-right: 2px solid #ddd; padding: 12px 20px">cgF1</th>
-      <th style="text-align: center; padding: 12px 20px">cgF1</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">AP</th>
-      <th style="text-align: center; padding: 12px 20px">AP</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">AP<sub>o</sub>
-</th>
-      <th style="text-align: center; padding: 12px 20px">cgF1</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">Human</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 2px solid #ddd; padding: 10px 20px">72.8</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; padding: 10px 20px">74.0</td>
-    </tr>
-    <tr>
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">OWLv2*</td>
-      <td style="text-align: center; padding: 10px 20px; color: #999">29.3</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px; color: #999">43.4</td>
-      <td style="text-align: center; border-right: 2px solid #ddd; padding: 10px 20px">24.6</td>
-      <td style="text-align: center; padding: 10px 20px; color: #999">30.2</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px; color: #999">45.5</td>
-      <td style="text-align: center; padding: 10px 20px">46.1</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">23.9</td>
-      <td style="text-align: center; padding: 10px 20px">24.5</td>
-    </tr>
-    <tr>
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">DINO-X</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">38.5</td>
-      <td style="text-align: center; border-right: 2px solid #ddd; padding: 10px 20px">21.3</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">52.4</td>
-      <td style="text-align: center; padding: 10px 20px">56.0</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; padding: 10px 20px">22.5</td>
-    </tr>
-    <tr>
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">Gemini 2.5</td>
-      <td style="text-align: center; padding: 10px 20px">13.4</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 2px solid #ddd; padding: 10px 20px">13.0</td>
-      <td style="text-align: center; padding: 10px 20px">16.1</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; padding: 10px 20px">14.4</td>
-    </tr>
-    <tr style="border-top: 2px solid #b19c9cff">
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">SAM 3</td>
-      <td style="text-align: center; padding: 10px 20px">37.2</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">48.5</td>
-      <td style="text-align: center; border-right: 2px solid #ddd; padding: 10px 20px">54.1</td>
-      <td style="text-align: center; padding: 10px 20px">40.6</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">53.6</td>
-      <td style="text-align: center; padding: 10px 20px">56.4</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">55.7</td>
-      <td style="text-align: center; padding: 10px 20px">55.7</td>
-    </tr>
-  </tbody>
-</table>
+All backend settings are configured via environment variables:
 
-<p style="text-align: center; margin-top: 10px; font-size: 0.9em; color: #ddd;">* Partially trained on LVIS, AP<sub>o</sub> refers to COCO-O accuracy</p>
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SAM3_DEMO_TMP_DIR` | `tmp/sam3-demo` | Working directory for uploads and frames |
+| `SAM3_DEMO_MAX_DURATION_SEC` | `60` | Maximum allowed video duration in seconds |
+| `SAM3_DEMO_MAX_FRAMES` | `900` | Maximum extracted frames (FPS is downsampled to fit) |
+| `SAM3_DEMO_LOAD_MODEL_ON_STARTUP` | `0` | Set to `1` to preload the SAM3 model at startup |
 
-</div>
+---
 
-## Video Results
+## Current Limitations
 
-<div align="center">
-<table style="min-width: 80%; border: 2px solid #ddd; border-collapse: collapse">
-  <thead>
-    <tr>
-      <th rowspan="2" style="border-right: 2px solid #ddd; padding: 12px 20px">Model</th>
-      <th colspan="2" style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">SA-V test</th>
-      <th colspan="2" style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">YT-Temporal-1B test</th>
-      <th colspan="2" style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">SmartGlasses test</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">LVVIS test</th>
-      <th style="text-align: center; padding: 12px 20px">BURST test</th>
-    </tr>
-    <tr>
-      <th style="text-align: center; padding: 12px 20px">cgF1</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">pHOTA</th>
-      <th style="text-align: center; padding: 12px 20px">cgF1</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">pHOTA</th>
-      <th style="text-align: center; padding: 12px 20px">cgF1</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">pHOTA</th>
-      <th style="text-align: center; border-right: 1px solid #eee; padding: 12px 20px">mAP</th>
-      <th style="text-align: center; padding: 12px 20px">HOTA</th>
-    </tr>
-  </thead>
-  <tbody>
-    <tr>
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">Human</td>
-      <td style="text-align: center; padding: 10px 20px">53.1</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">70.5</td>
-      <td style="text-align: center; padding: 10px 20px">71.2</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">78.4</td>
-      <td style="text-align: center; padding: 10px 20px">58.5</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">72.3</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">-</td>
-      <td style="text-align: center; padding: 10px 20px">-</td>
-    </tr>
-    <tr style="border-top: 2px solid #b19c9cff">
-      <td style="border-right: 2px solid #ddd; padding: 10px 20px">SAM 3</td>
-      <td style="text-align: center; padding: 10px 20px">30.3</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">58.0</td>
-      <td style="text-align: center; padding: 10px 20px">50.8</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">69.9</td>
-      <td style="text-align: center; padding: 10px 20px">36.4</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">63.6</td>
-      <td style="text-align: center; border-right: 1px solid #eee; padding: 10px 20px">36.3</td>
-      <td style="text-align: center; padding: 10px 20px">44.5</td>
-    </tr>
-  </tbody>
-</table>
-</div>
+This is a **single-user demo**, not a production system:
 
-## SA-Co Dataset
+- One active session at a time (new upload replaces the previous)
+- In-memory state only — lost on backend restart
+- No user authentication (CORS allows all origins)
+- Local file storage for uploads and frames
+- No background job queue — processing is synchronous
+- One propagation stream at a time per session
 
-We release 2 image benchmarks, [SA-Co/Gold](scripts/eval/gold/README.md) and
-[SA-Co/Silver](scripts/eval/silver/README.md), and a video benchmark
-[SA-Co/VEval](scripts/eval/veval/README.md). The datasets contain images (or videos) with annotated noun phrases. Each image/video and noun phrase pair is annotated with instance masks and unique IDs of each object matching the phrase. Phrases that have no matching objects (negative prompts) have no masks, shown in red font in the figure. See the linked READMEs for more details on how to download and run evaluations on the datasets.
+---
 
-* HuggingFace host: [SA-Co/Gold](https://huggingface.co/datasets/facebook/SACo-Gold), [SA-Co/Silver](https://huggingface.co/datasets/facebook/SACo-Silver) and [SA-Co/VEval](https://huggingface.co/datasets/facebook/SACo-VEval)
-* Roboflow host: [SA-Co/Gold](https://universe.roboflow.com/sa-co-gold), [SA-Co/Silver](https://universe.roboflow.com/sa-co-silver) and [SA-Co/VEval](https://universe.roboflow.com/sa-co-veval)
+## Production Roadmap
 
-![SA-Co dataset](assets/sa_co_dataset.jpg?raw=true)
+The [production architecture doc](docs/production-architecture.md) outlines a four-phase scaling plan:
 
-## Development
+| Phase | Key Changes |
+|-------|-------------|
+| **Current** | Single user, in-memory state, local files |
+| **Beta** | Redis session routing, object storage (S3), OIDC auth |
+| **Public** | Multi-GPU worker pool, message queue, Postgres metadata, observability |
+| **Scale** | Autoscaling, tenant quotas, async exports, cost-aware scheduling |
 
-To set up the development environment:
+Key production concerns addressed: API gateway + WAF, sticky session routing to GPU workers, durable session checkpoints, per-tenant authorization, and dynamic GPU pool scaling.
 
-```bash
-pip install -e ".[dev,train]"
-```
+---
 
-To format the code:
+## Technologies
 
-```bash
-ufmt format .
-```
-
-## Contributing
-
-See [contributing](CONTRIBUTING.md) and the
-[code of conduct](CODE_OF_CONDUCT.md).
-
-## License
-
-This project is licensed under the SAM License - see the [LICENSE](LICENSE) file
-for details.
-
-## Acknowledgements
-
-We would like to thank the following people for their contributions to the SAM 3 project: Alex He, Alexander Kirillov,
-Alyssa Newcomb, Ana Paula Kirschner Mofarrej, Andrea Madotto, Andrew Westbury, Ashley Gabriel, Azita Shokpour,
-Ben Samples, Bernie Huang, Carleigh Wood, Ching-Feng Yeh, Christian Puhrsch, Claudette Ward, Daniel Bolya,
-Daniel Li, Facundo Figueroa, Fazila Vhora, George Orlin, Hanzi Mao, Helen Klein, Hu Xu, Ida Cheng, Jake Kinney,
-Jiale Zhi, Jo Sampaio, Joel Schlosser, Justin Johnson, Kai Brown, Karen Bergan, Karla Martucci, Kenny Lehmann,
-Maddie Mintz, Mallika Malhotra, Matt Ward, Michelle Chan, Michelle Restrepo, Miranda Hartley, Muhammad Maaz,
-Nisha Deo, Peter Park, Phillip Thomas, Raghu Nayani, Rene Martinez Doehner, Robbie Adkins, Ross Girshik, Sasha
-Mitts, Shashank Jain, Spencer Whitehead, Ty Toledano, Valentin Gabeur, Vincent Cho, Vivian Lee, William Ngan,
-Xuehai He, Yael Yungster, Ziqi Pang, Ziyi Dou, Zoe Quake.
-
-## Citing SAM 3
-
-If you use SAM 3 or the SA-Co dataset in your research, please use the following BibTeX entry.
-
-```bibtex
-@misc{carion2025sam3segmentconcepts,
-      title={SAM 3: Segment Anything with Concepts},
-      author={Nicolas Carion and Laura Gustafson and Yuan-Ting Hu and Shoubhik Debnath and Ronghang Hu and Didac Suris and Chaitanya Ryali and Kalyan Vasudev Alwala and Haitham Khedr and Andrew Huang and Jie Lei and Tengyu Ma and Baishan Guo and Arpit Kalla and Markus Marks and Joseph Greer and Meng Wang and Peize Sun and Roman Rädle and Triantafyllos Afouras and Effrosyni Mavroudi and Katherine Xu and Tsung-Han Wu and Yu Zhou and Liliane Momeni and Rishi Hazra and Shuangrui Ding and Sagar Vaze and Francois Porcher and Feng Li and Siyuan Li and Aishwarya Kamath and Ho Kei Cheng and Piotr Dollár and Nikhila Ravi and Kate Saenko and Pengchuan Zhang and Christoph Feichtenhofer},
-      year={2025},
-      eprint={2511.16719},
-      archivePrefix={arXiv},
-      primaryClass={cs.CV},
-      url={https://arxiv.org/abs/2511.16719},
-}
-```
+| Layer | Technology |
+|-------|------------|
+| ML Model | SAM3 (PyTorch 2.7+, CUDA 12.6+) |
+| Backend | FastAPI, Pydantic v2, FFmpeg/FFprobe |
+| Frontend | Next.js 15, React 19, TypeScript 5.7, Canvas API |
+| Mask Format | COCO RLE (pycocotools) |
+| Real-time | WebSocket (propagation streaming) |
+| Model Weights | Hugging Face Hub |
