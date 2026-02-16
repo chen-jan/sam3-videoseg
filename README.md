@@ -454,3 +454,11 @@ Key production concerns addressed: API gateway + WAF, sticky session routing to 
 | Mask Format | COCO RLE (pycocotools) |
 | Real-time | WebSocket (propagation streaming) |
 | Model Weights | Hugging Face Hub |
+
+
+## AWS EC2 Instance
+
+Using g5.2xlarge (NVIDIA A10)
+
+AMI:
+Deep Learning OSS Nvidia Driver AMI GPU PyTorch 2.7 (Ubuntu 22.04)
