@@ -119,3 +119,30 @@ export interface ExportRequest {
   };
   auto_propagate_if_incomplete: boolean;
 }
+
+export interface StorageStatusResponse {
+  storage_root: string;
+  total_bytes: number;
+  used_bytes: number;
+  free_bytes: number;
+  uploads_bytes: number;
+  uploads_count: number;
+}
+
+export interface StoredVideoInfo {
+  video_id: string;
+  file_name: string;
+  display_name: string;
+  size_bytes: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StoredVideoListResponse {
+  videos: StoredVideoInfo[];
+}
+
+export interface DeleteStoredVideosResponse {
+  ok: boolean;
+  deleted: number;
+}

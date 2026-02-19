@@ -24,15 +24,22 @@ from app.errors import ErrorCode, error_detail, http_error
 from app.models import (
     ClickPromptRequest,
     CreateObjectResponse,
+    DeleteStoredVideosRequest,
+    DeleteStoredVideosResponse,
     ExportRequest,
     OperationResponse,
     PromptResponse,
     PropagationStartMessage,
+    RenameStoredVideoRequest,
+    StorageStatusResponse,
+    StoredVideoInfo,
+    StoredVideoListResponse,
     TextPromptRequest,
     UploadResponse,
 )
 from app.sam3_service import Sam3Service
 from app.session_store import SessionRecord, SessionStore
+from app.storage_library import StorageLibrary
 from app.video_io import (
     ALLOWED_VIDEO_EXTS,
     cleanup_path,
@@ -51,6 +58,7 @@ settings = Settings()
 ensure_directories(settings)
 session_store = SessionStore()
 sam3_service = Sam3Service(session_store=session_store)
+storage_library = StorageLibrary(settings.uploads_dir)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="SAM3 Demo Backend", version="0.1.0")
@@ -160,67 +168,40 @@ def _cleanup_active_session() -> None:
         sam3_service.close_session(active.session_id)
     except Exception:
         pass
-    cleanup_path(active.upload_path)
     cleanup_path(active.frames_dir)
     session_store.clear_active()
 
 
-@app.on_event("startup")
-def on_startup() -> None:
-    if settings.load_model_on_startup:
-        sam3_service.load_predictor()
-
-
-@app.get("/api/health")
-def health() -> dict[str, str]:
-    return {"status": "ok"}
-
-
-@app.post("/api/videos/upload", response_model=UploadResponse)
-async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
-    filename = file.filename or "upload.mp4"
-    ext = Path(filename).suffix.lower() or ".mp4"
-    if ext not in ALLOWED_VIDEO_EXTS:
+def _start_session_from_video(video_path: Path) -> UploadResponse:
+    metadata = probe_video(video_path)
+    if not is_duration_allowed(metadata.duration_sec, settings.max_duration_sec):
         raise http_error(
             400,
-            ErrorCode.BAD_REQUEST,
-            f"Unsupported extension '{ext}'. Allowed: {sorted(ALLOWED_VIDEO_EXTS)}",
+            ErrorCode.VIDEO_TOO_LONG,
+            f"Video duration {metadata.duration_sec:.2f}s exceeds max {settings.max_duration_sec:.2f}s",
         )
 
-    upload_path = settings.uploads_dir / f"{uuid.uuid4().hex}{ext}"
-    await save_upload_file(file, upload_path)
+    processing_fps = compute_processing_fps(
+        source_fps=metadata.fps,
+        duration_sec=metadata.duration_sec,
+        max_frames=settings.max_frames,
+    )
 
-    frames_dir: Path | None = None
+    _cleanup_active_session()
+
+    session_id = uuid.uuid4().hex
+    frames_dir = settings.frames_dir / session_id
     try:
-        metadata = probe_video(upload_path)
-        if not is_duration_allowed(metadata.duration_sec, settings.max_duration_sec):
-            cleanup_path(upload_path)
-            raise http_error(
-                400,
-                ErrorCode.VIDEO_TOO_LONG,
-                f"Video duration {metadata.duration_sec:.2f}s exceeds max {settings.max_duration_sec:.2f}s",
-            )
-
-        processing_fps = compute_processing_fps(
-            source_fps=metadata.fps,
-            duration_sec=metadata.duration_sec,
-            max_frames=settings.max_frames,
-        )
-
-        _cleanup_active_session()
-
-        session_id = uuid.uuid4().hex
-        frames_dir = settings.frames_dir / session_id
         extract_frames(
-            video_path=upload_path,
+            video_path=video_path,
             frames_dir=frames_dir,
             processing_fps=processing_fps,
             max_frames=settings.max_frames,
         )
-
         processing_num_frames = count_extracted_frames(frames_dir)
         if processing_num_frames <= 0:
             raise RuntimeError("No frames were extracted from video")
+
         first_frame_path = get_frame_path(frames_dir, 0)
         try:
             frame_width, frame_height = probe_image_size(first_frame_path)
@@ -234,7 +215,7 @@ async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
 
         record = SessionRecord(
             session_id=actual_session_id,
-            upload_path=upload_path,
+            upload_path=video_path,
             frames_dir=frames_dir,
             num_frames=processing_num_frames,
             width=frame_width,
@@ -255,13 +236,119 @@ async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
             source_duration_sec=float(metadata.duration_sec),
             processing_num_frames=processing_num_frames,
         )
+    except Exception:
+        cleanup_path(frames_dir)
+        raise
+
+
+def _to_stored_video_info(video) -> StoredVideoInfo:
+    return StoredVideoInfo(
+        video_id=video.video_id,
+        file_name=video.file_name,
+        display_name=video.display_name,
+        size_bytes=video.size_bytes,
+        created_at=video.created_at,
+        updated_at=video.updated_at,
+    )
+
+
+def _display_name_from_filename(filename: str, fallback: str) -> str:
+    stem = Path(filename).stem.strip()
+    return stem if stem else fallback
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    if settings.load_model_on_startup:
+        sam3_service.load_predictor()
+
+
+@app.get("/api/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
+@app.get("/api/storage/status", response_model=StorageStatusResponse)
+def storage_status() -> StorageStatusResponse:
+    payload = storage_library.storage_status(settings.tmp_dir)
+    return StorageStatusResponse(**payload)
+
+
+@app.get("/api/storage/videos", response_model=StoredVideoListResponse)
+def list_stored_videos() -> StoredVideoListResponse:
+    videos = [_to_stored_video_info(v) for v in storage_library.list_videos()]
+    return StoredVideoListResponse(videos=videos)
+
+
+@app.post("/api/storage/videos/{video_id}/load", response_model=UploadResponse)
+def load_stored_video(video_id: str) -> UploadResponse:
+    video_path = storage_library.resolve_video_path(video_id)
+    if video_path is None:
+        raise http_error(404, ErrorCode.BAD_REQUEST, "Stored video not found")
+
+    try:
+        return _start_session_from_video(video_path)
     except HTTPException:
-        if frames_dir is not None:
-            cleanup_path(frames_dir)
         raise
     except Exception as exc:
-        if frames_dir is not None:
-            cleanup_path(frames_dir)
+        logger.exception("load_stored_video_failed video_id=%s", video_id)
+        raise http_error(
+            500,
+            ErrorCode.VIDEO_PROCESSING_FAILED,
+            "Failed to load stored video",
+            details=str(exc),
+        )
+
+
+@app.patch("/api/storage/videos/{video_id}", response_model=StoredVideoInfo)
+def rename_stored_video(video_id: str, req: RenameStoredVideoRequest) -> StoredVideoInfo:
+    renamed = storage_library.rename_video(video_id, req.display_name)
+    if renamed is None:
+        raise http_error(404, ErrorCode.BAD_REQUEST, "Stored video not found")
+    return _to_stored_video_info(renamed)
+
+
+@app.post("/api/storage/videos/delete", response_model=DeleteStoredVideosResponse)
+def delete_stored_videos(req: DeleteStoredVideosRequest) -> DeleteStoredVideosResponse:
+    video_ids = [video_id.strip() for video_id in req.video_ids if video_id.strip()]
+    if len(video_ids) == 0:
+        return DeleteStoredVideosResponse(ok=True, deleted=0)
+
+    active = session_store.get_active()
+    if active is not None and active.upload_path.stem in set(video_ids):
+        _cleanup_active_session()
+
+    deleted = storage_library.delete_videos(video_ids)
+    return DeleteStoredVideosResponse(ok=True, deleted=deleted)
+
+
+@app.post("/api/videos/upload", response_model=UploadResponse)
+async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
+    filename = file.filename or "upload.mp4"
+    ext = Path(filename).suffix.lower() or ".mp4"
+    if ext not in ALLOWED_VIDEO_EXTS:
+        raise http_error(
+            400,
+            ErrorCode.BAD_REQUEST,
+            f"Unsupported extension '{ext}'. Allowed: {sorted(ALLOWED_VIDEO_EXTS)}",
+        )
+
+    video_id = uuid.uuid4().hex
+    upload_path = settings.uploads_dir / f"{video_id}{ext}"
+    await save_upload_file(file, upload_path)
+
+    try:
+        response = _start_session_from_video(upload_path)
+        storage_library.register_video(
+            video_id=video_id,
+            file_name=upload_path.name,
+            display_name=_display_name_from_filename(filename, video_id),
+        )
+        return response
+    except HTTPException:
+        cleanup_path(upload_path)
+        raise
+    except Exception as exc:
         cleanup_path(upload_path)
         logger.exception("upload_failed filename=%s", filename)
         raise http_error(
@@ -402,7 +489,6 @@ def delete_session(session_id: str) -> OperationResponse:
     try:
         sam3_service.close_session(session_id)
     finally:
-        cleanup_path(record.upload_path)
         cleanup_path(record.frames_dir)
         session_store.clear_active()
     return OperationResponse(ok=True)

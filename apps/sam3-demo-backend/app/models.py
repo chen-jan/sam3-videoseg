@@ -97,3 +97,38 @@ class ExportRequest(BaseModel):
     merge: ExportMergeConfig = Field(default_factory=ExportMergeConfig)
     scope: ExportScope = Field(default_factory=ExportScope)
     auto_propagate_if_incomplete: bool = False
+
+
+class StorageStatusResponse(BaseModel):
+    storage_root: str
+    total_bytes: int
+    used_bytes: int
+    free_bytes: int
+    uploads_bytes: int
+    uploads_count: int
+
+
+class StoredVideoInfo(BaseModel):
+    video_id: str
+    file_name: str
+    display_name: str
+    size_bytes: int
+    created_at: str
+    updated_at: str
+
+
+class StoredVideoListResponse(BaseModel):
+    videos: list[StoredVideoInfo]
+
+
+class RenameStoredVideoRequest(BaseModel):
+    display_name: str = Field(min_length=1, max_length=120)
+
+
+class DeleteStoredVideosRequest(BaseModel):
+    video_ids: list[str] = Field(default_factory=list)
+
+
+class DeleteStoredVideosResponse(BaseModel):
+    ok: bool = True
+    deleted: int = 0

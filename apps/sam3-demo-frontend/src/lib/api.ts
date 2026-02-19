@@ -1,11 +1,15 @@
 import {
   ClickPromptRequest,
   CreateObjectResponse,
+  DeleteStoredVideosResponse,
   ExportRequest,
   OperationResponse,
   PromptResponse,
   PropagationFrameEvent,
   PropagationStart,
+  StorageStatusResponse,
+  StoredVideoInfo,
+  StoredVideoListResponse,
   TextPromptRequest,
   UploadResponse,
   WsErrorPayload,
@@ -94,6 +98,42 @@ export async function uploadVideo(file: File): Promise<UploadResponse> {
   return requestJson<UploadResponse>(`${BACKEND_URL}/api/videos/upload`, {
     method: "POST",
     body: form,
+  });
+}
+
+export async function getStorageStatus(): Promise<StorageStatusResponse> {
+  return requestJson<StorageStatusResponse>(`${BACKEND_URL}/api/storage/status`);
+}
+
+export async function listStoredVideos(): Promise<StoredVideoInfo[]> {
+  const payload = await requestJson<StoredVideoListResponse>(`${BACKEND_URL}/api/storage/videos`);
+  return payload.videos;
+}
+
+export async function loadStoredVideo(videoId: string): Promise<UploadResponse> {
+  return requestJson<UploadResponse>(`${BACKEND_URL}/api/storage/videos/${videoId}/load`, {
+    method: "POST",
+  });
+}
+
+export async function renameStoredVideo(
+  videoId: string,
+  displayName: string
+): Promise<StoredVideoInfo> {
+  return requestJson<StoredVideoInfo>(`${BACKEND_URL}/api/storage/videos/${videoId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ display_name: displayName }),
+  });
+}
+
+export async function deleteStoredVideos(
+  videoIds: string[]
+): Promise<DeleteStoredVideosResponse> {
+  return requestJson<DeleteStoredVideosResponse>(`${BACKEND_URL}/api/storage/videos/delete`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ video_ids: videoIds }),
   });
 }
 

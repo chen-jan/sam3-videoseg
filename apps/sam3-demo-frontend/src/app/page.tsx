@@ -8,9 +8,14 @@ import {
   addTextPrompt,
   buildFrameUrl,
   createObject,
+  deleteStoredVideos,
   deleteSession,
   exportSession,
+  getStorageStatus,
+  listStoredVideos,
+  loadStoredVideo,
   openPropagationSocket,
+  renameStoredVideo,
   removeObject,
   resetSession,
   uploadVideo,
@@ -24,6 +29,8 @@ import {
   ObjectOutput,
   PointInput,
   PromptResponse,
+  StorageStatusResponse,
+  StoredVideoInfo,
   TrackedObject,
   UploadResponse,
   WsErrorPayload,
@@ -34,6 +41,7 @@ import { PromptPanel } from "../components/PromptPanel";
 import { VideoCanvas } from "../components/VideoCanvas";
 import { ExportPanel } from "../components/ExportPanel";
 import { ErrorPanel } from "../components/ErrorPanel";
+import { StoragePanel } from "../components/StoragePanel";
 
 const COLORS = [
   "#ff5733",
@@ -156,6 +164,12 @@ export default function Page() {
   const [autoPropagateForExport, setAutoPropagateForExport] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
   const [isExportOpen, setIsExportOpen] = useState(false);
+  const [isStorageOpen, setIsStorageOpen] = useState(false);
+  const [isStorageBusy, setIsStorageBusy] = useState(false);
+  const [storageStatus, setStorageStatus] = useState<StorageStatusResponse | null>(null);
+  const [storedVideos, setStoredVideos] = useState<StoredVideoInfo[]>([]);
+  const [selectedStoredVideoIds, setSelectedStoredVideoIds] = useState<string[]>([]);
+  const [activeStoredVideoId, setActiveStoredVideoId] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -236,6 +250,38 @@ export default function Page() {
     }
   };
 
+  const applyLoadedSession = (uploaded: UploadResponse) => {
+    setSession(uploaded);
+    setCurrentFrame(0);
+    setMaskCache({});
+    setObjectsById({});
+    setSelectedObjId(null);
+    setIsPropagating(false);
+    setIsPlaying(false);
+    setLastClick(null);
+    setStatus(
+      `Ready: ${uploaded.processing_num_frames} frames @ ${uploaded.processing_fps.toFixed(2)} fps`
+    );
+  };
+
+  const refreshStorage = async () => {
+    try {
+      setIsStorageBusy(true);
+      const [nextStatus, videos] = await Promise.all([getStorageStatus(), listStoredVideos()]);
+      setStorageStatus(nextStatus);
+      setStoredVideos(videos);
+      setSelectedStoredVideoIds((prev) =>
+        prev.filter((videoId) => videos.some((video) => video.video_id === videoId))
+      );
+    } catch (error) {
+      pushError(error, "storage_refresh");
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Storage refresh failed: ${message}`);
+    } finally {
+      setIsStorageBusy(false);
+    }
+  };
+
   const handleUpload = async (file: File) => {
     try {
       setStatus("Uploading and preprocessing video...");
@@ -244,17 +290,11 @@ export default function Page() {
         await deleteSession(session.session_id);
       }
       const uploaded = await uploadVideo(file);
-      setSession(uploaded);
-      setCurrentFrame(0);
-      setMaskCache({});
-      setObjectsById({});
-      setSelectedObjId(null);
-      setIsPropagating(false);
-      setIsPlaying(false);
-      setLastClick(null);
-      setStatus(
-        `Ready: ${uploaded.processing_num_frames} frames @ ${uploaded.processing_fps.toFixed(2)} fps`
-      );
+      setActiveStoredVideoId(null);
+      applyLoadedSession(uploaded);
+      if (isStorageOpen) {
+        await refreshStorage();
+      }
     } catch (error) {
       pushError(error, "upload");
       const message = error instanceof Error ? error.message : String(error);
@@ -441,6 +481,68 @@ export default function Page() {
     );
   };
 
+  const handleOpenStorage = async () => {
+    setIsStorageOpen(true);
+    await refreshStorage();
+  };
+
+  const handleLoadStoredVideo = async (videoId: string) => {
+    try {
+      setStatus("Loading video from server storage...");
+      closePropagationSocket();
+      if (session !== null) {
+        await deleteSession(session.session_id);
+      }
+      const uploaded = await loadStoredVideo(videoId);
+      setActiveStoredVideoId(videoId);
+      applyLoadedSession(uploaded);
+      await refreshStorage();
+    } catch (error) {
+      pushError(error, "storage_load");
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Stored video load failed: ${message}`);
+    }
+  };
+
+  const handleRenameStoredVideo = async (videoId: string, displayName: string) => {
+    try {
+      setIsStorageBusy(true);
+      await renameStoredVideo(videoId, displayName);
+      setStatus("Stored video renamed.");
+      await refreshStorage();
+    } catch (error) {
+      pushError(error, "storage_rename");
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Rename failed: ${message}`);
+      setIsStorageBusy(false);
+    }
+  };
+
+  const handleDeleteSelectedStoredVideos = async () => {
+    if (selectedStoredVideoIds.length === 0) {
+      return;
+    }
+    try {
+      setIsStorageBusy(true);
+      const deleting = [...selectedStoredVideoIds];
+      const response = await deleteStoredVideos(deleting);
+      setSelectedStoredVideoIds([]);
+      if (
+        activeStoredVideoId !== null &&
+        deleting.includes(activeStoredVideoId)
+      ) {
+        setActiveStoredVideoId(null);
+      }
+      setStatus(`Deleted ${response.deleted} stored video(s).`);
+      await refreshStorage();
+    } catch (error) {
+      pushError(error, "storage_delete");
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Delete failed: ${message}`);
+      setIsStorageBusy(false);
+    }
+  };
+
   const handleDownloadExport = async () => {
     if (session === null) {
       return;
@@ -605,6 +707,16 @@ export default function Page() {
               Open Export Settings
             </button>
           </div>
+
+          <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 11, display: "grid", gap: 7 }}>
+            <h3 style={{ margin: 0 }}>Storage</h3>
+            <button onClick={() => void handleOpenStorage()}>
+              Open Storage Manager
+            </button>
+            <small style={{ color: "#666" }}>
+              Check server free space and manage stored uploads.
+            </small>
+          </div>
         </div>
 
         <div style={{ display: "grid", gap: 11, alignContent: "start", alignItems: "start" }}>
@@ -695,6 +807,34 @@ export default function Page() {
           </div>
         </div>
       ) : null}
+
+      <StoragePanel
+        isOpen={isStorageOpen}
+        isBusy={isStorageBusy}
+        status={storageStatus}
+        videos={storedVideos}
+        selectedVideoIds={selectedStoredVideoIds}
+        activeVideoId={activeStoredVideoId}
+        onClose={() => setIsStorageOpen(false)}
+        onRefresh={() => void refreshStorage()}
+        onToggleSelect={(videoId) => {
+          setSelectedStoredVideoIds((prev) =>
+            prev.includes(videoId)
+              ? prev.filter((id) => id !== videoId)
+              : [...prev, videoId]
+          );
+        }}
+        onSelectAll={(checked) => {
+          if (checked) {
+            setSelectedStoredVideoIds(storedVideos.map((video) => video.video_id));
+          } else {
+            setSelectedStoredVideoIds([]);
+          }
+        }}
+        onLoad={(videoId) => void handleLoadStoredVideo(videoId)}
+        onRename={(videoId, displayName) => void handleRenameStoredVideo(videoId, displayName)}
+        onDeleteSelected={() => void handleDeleteSelectedStoredVideos()}
+      />
     </main>
   );
 }
