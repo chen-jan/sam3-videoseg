@@ -33,6 +33,7 @@ import { PlaybackControls } from "../components/PlaybackControls";
 import { PromptPanel } from "../components/PromptPanel";
 import { VideoCanvas } from "../components/VideoCanvas";
 import { ExportPanel } from "../components/ExportPanel";
+import { ErrorPanel } from "../components/ErrorPanel";
 
 const COLORS = [
   "#ff5733",
@@ -553,7 +554,7 @@ export default function Page() {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "360px minmax(0, 1fr)",
+          gridTemplateColumns: "320px minmax(0, 1fr)",
           gap: 14,
           alignItems: "start",
         }}
@@ -565,8 +566,6 @@ export default function Page() {
             clickMode={clickMode}
             isPropagating={isPropagating}
             status={status}
-            latestError={latestError}
-            errorHistory={errorHistory}
             onTextPromptChange={setTextPrompt}
             onSubmitTextPrompt={() => void handleSubmitTextPrompt()}
             onAddObject={() => void handleAddObject()}
@@ -635,6 +634,8 @@ export default function Page() {
             totalFrames={session?.processing_num_frames ?? 1}
             onFrameChange={setCurrentFrame}
           />
+
+          <ErrorPanel latestError={latestError} history={errorHistory} />
         </div>
       </div>
 

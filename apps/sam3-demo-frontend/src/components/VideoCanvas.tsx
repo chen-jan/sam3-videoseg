@@ -104,6 +104,23 @@ function decodeMask(size: [number, number] | number[], counts: string): Uint8Arr
   return rowMajorMask;
 }
 
+function getRenderedContentRect(
+  displayWidth: number,
+  displayHeight: number,
+  contentWidth: number,
+  contentHeight: number
+) {
+  if (displayWidth <= 0 || displayHeight <= 0 || contentWidth <= 0 || contentHeight <= 0) {
+    return null;
+  }
+  const scale = Math.min(displayWidth / contentWidth, displayHeight / contentHeight);
+  const renderedWidth = contentWidth * scale;
+  const renderedHeight = contentHeight * scale;
+  const offsetX = (displayWidth - renderedWidth) / 2;
+  const offsetY = (displayHeight - renderedHeight) / 2;
+  return { offsetX, offsetY, renderedWidth, renderedHeight };
+}
+
 export function VideoCanvas({
   frameUrl,
   width,
@@ -246,8 +263,24 @@ export function VideoCanvas({
       return;
     }
     const rect = canvas.getBoundingClientRect();
-    const x = (event.clientX - rect.left) / rect.width;
-    const y = (event.clientY - rect.top) / rect.height;
+    const rendered = getRenderedContentRect(rect.width, rect.height, canvas.width, canvas.height);
+    if (!rendered) {
+      return;
+    }
+
+    const localX = event.clientX - rect.left - rendered.offsetX;
+    const localY = event.clientY - rect.top - rendered.offsetY;
+    if (
+      localX < 0 ||
+      localY < 0 ||
+      localX > rendered.renderedWidth ||
+      localY > rendered.renderedHeight
+    ) {
+      return;
+    }
+
+    const x = localX / rendered.renderedWidth;
+    const y = localY / rendered.renderedHeight;
     onPointPrompt({ x, y, label });
   };
 
@@ -264,7 +297,7 @@ export function VideoCanvas({
       }}
       style={{
         width: "100%",
-        maxHeight: "60vh",
+        maxHeight: "72vh",
         display: "block",
         objectFit: "contain",
         border: "1px solid #ddd",

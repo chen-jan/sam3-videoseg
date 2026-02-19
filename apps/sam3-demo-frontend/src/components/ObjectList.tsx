@@ -23,12 +23,22 @@ export function ObjectList({
     objId < 0 ? `Manual ${Math.abs(objId)} (id ${objId})` : `Detected ${objId}`;
 
   return (
-    <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
+    <div
+      style={{
+        border: "1px solid #ddd",
+        borderRadius: 8,
+        padding: 12,
+        height: 360,
+        display: "grid",
+        gridTemplateRows: "auto minmax(0, 1fr)",
+        gap: 10,
+      }}
+    >
       <h3 style={{ marginTop: 0 }}>Objects</h3>
       {objects.length === 0 ? (
         <p style={{ margin: 0, color: "#666" }}>No objects yet.</p>
       ) : (
-        <div style={{ display: "grid", gap: 8 }}>
+        <div style={{ display: "grid", gap: 8, overflowY: "auto", paddingRight: 4 }}>
           {objects.map((object) => (
             <div
               key={object.objId}
@@ -84,23 +94,30 @@ export function ObjectList({
                 <button onClick={() => onRemove(object.objId)}>Remove</button>
               </div>
 
-              <label style={{ display: "grid", gap: 4 }}>
-                <span style={{ fontSize: 12, color: "#666" }}>Class name</span>
-                <input
-                  value={object.className}
-                  onChange={(event) => onRenameClass(object.objId, event.target.value)}
-                  placeholder="e.g. cow"
-                />
-              </label>
+              <details>
+                <summary style={{ cursor: "pointer", fontSize: 13, color: "#334155" }}>
+                  Rename labels
+                </summary>
+                <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+                  <label style={{ display: "grid", gap: 4 }}>
+                    <span style={{ fontSize: 12, color: "#666" }}>Class name</span>
+                    <input
+                      value={object.className}
+                      onChange={(event) => onRenameClass(object.objId, event.target.value)}
+                      placeholder="e.g. cow"
+                    />
+                  </label>
 
-              <label style={{ display: "grid", gap: 4 }}>
-                <span style={{ fontSize: 12, color: "#666" }}>Instance name</span>
-                <input
-                  value={object.instanceName}
-                  onChange={(event) => onRenameInstance(object.objId, event.target.value)}
-                  placeholder="e.g. cow_left_1"
-                />
-              </label>
+                  <label style={{ display: "grid", gap: 4 }}>
+                    <span style={{ fontSize: 12, color: "#666" }}>Instance name</span>
+                    <input
+                      value={object.instanceName}
+                      onChange={(event) => onRenameInstance(object.objId, event.target.value)}
+                      placeholder="e.g. cow_left_1"
+                    />
+                  </label>
+                </div>
+              </details>
             </div>
           ))}
         </div>
