@@ -312,7 +312,7 @@ export function VideoCanvas({
           objectFit: "contain",
           border: "1px solid #ddd",
           borderRadius: 8,
-          cursor: selectedObjId === null ? "not-allowed" : "crosshair",
+          cursor: selectedObjId === null ? "not-allowed" : "default",
         }}
       />
       {showLoadingOverlay ? (

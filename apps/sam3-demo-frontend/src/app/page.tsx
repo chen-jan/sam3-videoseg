@@ -634,6 +634,18 @@ export default function Page() {
   }, [session]);
 
   useEffect(() => {
+    if (lastClick === null) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      setLastClick(null);
+    }, 450);
+    return () => {
+      window.clearTimeout(timer);
+    };
+  }, [lastClick]);
+
+  useEffect(() => {
     if (!isPlaying || session === null) {
       return;
     }
