@@ -6,6 +6,8 @@ A monorepo wrapping Meta's **Segment Anything Model 3 (SAM3)** with an interacti
 
 ## Table of Contents
 
+- [Quick Start (AWS EC2 Remote GPU First)](#quick-start-aws-ec2-remote-gpu-first)
+- [Configuration](#configuration)
 - [Repository Layout](#repository-layout)
 - [Architecture Overview](#architecture-overview)
 - [How It Works: End-to-End Data Flow](#how-it-works-end-to-end-data-flow)
@@ -13,11 +15,67 @@ A monorepo wrapping Meta's **Segment Anything Model 3 (SAM3)** with an interacti
 - [Frontend (Next.js)](#frontend-nextjs)
 - [Upstream SAM3 Model](#upstream-sam3-model)
 - [API Reference](#api-reference)
-- [Quick Start](#quick-start)
-- [Remote GPU Setup (Lambda Labs)](#remote-gpu-setup-lambda-labs)
-- [Configuration](#configuration)
 - [Current Limitations](#current-limitations)
 - [Production Roadmap](#production-roadmap)
+
+---
+
+## Quick Start (AWS EC2 Remote GPU First)
+
+### Prerequisites
+
+- Python 3.10+
+- Node.js 20+
+- `ffmpeg` and `ffprobe` in your `PATH`
+- AWS EC2 GPU instance (for practical inference speed)
+
+### 1) Installation (on AWS EC2)
+
+From repo root on your EC2 VM:
+
+```bash
+cd ~/sam3-videoseg
+# system deps
+sudo apt-get update && sudo apt-get install -y ffmpeg
+
+pip install -e upstream/sam3-original
+pip install -r apps/sam3-demo-backend/requirements.txt
+pip install -e apps/sam3-demo-backend
+
+# login for gated model access (Hugging Face CLI)
+hf auth login
+# fallback if `hf` is not on PATH:
+python3 -m huggingface_hub.cli.hf auth login
+# or non-interactive:
+# hf auth login --token <YOUR_HF_TOKEN>
+# python3 -m huggingface_hub.cli.hf auth login --token <YOUR_HF_TOKEN>
+```
+
+### 2) Run backend (on AWS EC2)
+
+```bash
+cd ~/sam3-videoseg
+python3 -m uvicorn app.main:app \
+  --app-dir apps/sam3-demo-backend \
+  --host 127.0.0.1 \
+  --port 8000
+```
+
+### 3) Open SSH tunnel (on your laptop)
+
+```bash
+ssh -L 8000:localhost:8000 ubuntu@<aws-ec2-ip>
+```
+
+### 4) Run frontend (on your laptop, separate terminal)
+
+```bash
+cd apps/sam3-demo-frontend
+npm install
+NEXT_PUBLIC_BACKEND_URL=http://localhost:8000 npm run dev
+```
+
+Open [http://localhost:3000](http://localhost:3000).
 
 ---
 
@@ -385,80 +443,6 @@ For the full model documentation, training instructions, and evaluation benchmar
 }
 ```
 
----
-
-## Quick Start
-
-### Prerequisites
-
-- Python 3.10+
-- Node.js 20+
-- `ffmpeg` and `ffprobe` in your `PATH`
-- CUDA GPU for real inference (CPU will be very slow)
-
-### Install and Run
-
-**Backend** (from repo root):
-
-```bash
-pip install -e upstream/sam3-original
-pip install -r apps/sam3-demo-backend/requirements.txt
-pip install -e apps/sam3-demo-backend
-
-# login for gated model access (Hugging Face CLI)
-hf auth login
-# fallback if `hf` is not on PATH:
-python3 -m huggingface_hub.cli.hf auth login
-# or non-interactive:
-# hf auth login --token <YOUR_HF_TOKEN>
-# python3 -m huggingface_hub.cli.hf auth login --token <YOUR_HF_TOKEN>
-
-python3 -m uvicorn app.main:app \
-  --app-dir apps/sam3-demo-backend \
-  --host 127.0.0.1 \
-  --port 8000
-```
-
-**Frontend** (in a second terminal):
-
-```bash
-cd apps/sam3-demo-frontend
-npm install
-NEXT_PUBLIC_BACKEND_URL=http://localhost:8000 npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000).
-
----
-
-## Remote GPU Setup (Lambda Labs)
-
-When running on a remote GPU VM without a public IP, use SSH tunneling:
-
-**On the VM:**
-
-```bash
-cd ~/sam3
-pip install -e upstream/sam3-original
-pip install -r apps/sam3-demo-backend/requirements.txt
-pip install -e apps/sam3-demo-backend
-
-python3 -m uvicorn app.main:app \
-  --app-dir apps/sam3-demo-backend \
-  --host 127.0.0.1 \
-  --port 8000
-```
-
-**On your laptop:**
-
-```bash
-ssh -L 8000:localhost:8000 ubuntu@<lambda-ip>
-```
-
-Then run the frontend locally pointing at `http://localhost:8000` (same as Quick Start).
-
----
-
 ## Configuration
 
 All backend settings are configured via environment variables:
@@ -515,7 +499,7 @@ Key production concerns addressed: API gateway + WAF, sticky session routing to 
 
 ## AWS EC2 Instance
 
-Using g5.2xlarge (NVIDIA A10)
+Using g5.xlarge (NVIDIA A10)
 
 AMI:
 Deep Learning OSS Nvidia Driver AMI GPU PyTorch 2.7 (Ubuntu 22.04)
