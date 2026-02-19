@@ -874,7 +874,7 @@ export default function Page() {
             onRenameClass={(objId, className) => {
               setObjectsById((prev) => ({
                 ...prev,
-                [objId]: { ...prev[objId], className },
+                [objId]: { ...prev[objId], className, instanceName: className },
               }));
             }}
             onRenameInstance={(objId, instanceName) => {

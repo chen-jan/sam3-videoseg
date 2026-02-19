@@ -19,8 +19,15 @@ export function ObjectList({
   onRenameClass,
   onRenameInstance,
 }: ObjectListProps) {
-  const objectLabel = (objId: number) =>
-    objId < 0 ? `Manual ${Math.abs(objId)} (id ${objId})` : `Detected ${objId}`;
+  const objectLabel = (object: TrackedObject) => {
+    const name = object.className.trim() || object.instanceName.trim();
+    if (name.length > 0) {
+      return `${name} (id ${object.objId})`;
+    }
+    return object.objId < 0
+      ? `Manual ${Math.abs(object.objId)} (id ${object.objId})`
+      : `Detected ${object.objId}`;
+  };
 
   return (
     <div
@@ -79,7 +86,7 @@ export function ObjectList({
                   }}
                   title={`Raw object id: ${object.objId}`}
                 >
-                  {objectLabel(object.objId)}
+                  {objectLabel(object)}
                 </button>
                 {selectedObjId === object.objId ? (
                   <span style={{ color: "#1d4ed8", fontSize: 12, fontWeight: 600 }}>
