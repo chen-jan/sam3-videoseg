@@ -14,7 +14,7 @@ class Settings:
         "SAM3_DEMO_DEFAULT_PROPAGATION_DIRECTION", "both"
     )
     load_model_on_startup: bool = (
-        os.getenv("SAM3_DEMO_LOAD_MODEL_ON_STARTUP", "1") == "1"
+        os.getenv("SAM3_DEMO_LOAD_MODEL_ON_STARTUP", "0") == "1"
     )
 
     @property

@@ -87,6 +87,32 @@ def probe_video(video_path: Path) -> VideoMetadata:
     return VideoMetadata(width=width, height=height, fps=max(fps, 1.0), duration_sec=duration_sec)
 
 
+def probe_image_size(image_path: Path) -> tuple[int, int]:
+    cmd = [
+        "ffprobe",
+        "-v",
+        "error",
+        "-select_streams",
+        "v:0",
+        "-show_entries",
+        "stream=width,height",
+        "-of",
+        "json",
+        str(image_path),
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"ffprobe failed for image: {proc.stderr}")
+
+    data = json.loads(proc.stdout)
+    stream = (data.get("streams") or [{}])[0]
+    width = int(stream.get("width") or 0)
+    height = int(stream.get("height") or 0)
+    if width <= 0 or height <= 0:
+        raise RuntimeError("Could not parse valid frame dimensions")
+    return width, height
+
+
 def is_duration_allowed(duration_sec: float, max_duration_sec: float) -> bool:
     return duration_sec <= max_duration_sec
 

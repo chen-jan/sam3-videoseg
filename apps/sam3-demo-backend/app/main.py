@@ -30,6 +30,7 @@ from app.video_io import (
     get_frame_path,
     is_duration_allowed,
     probe_video,
+    probe_image_size,
     save_upload_file,
 )
 
@@ -150,6 +151,11 @@ async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
         processing_num_frames = count_extracted_frames(frames_dir)
         if processing_num_frames <= 0:
             raise RuntimeError("No frames were extracted from video")
+        first_frame_path = get_frame_path(frames_dir, 0)
+        try:
+            frame_width, frame_height = probe_image_size(first_frame_path)
+        except Exception:
+            frame_width, frame_height = metadata.width, metadata.height
 
         actual_session_id = sam3_service.start_session(
             session_id=session_id,
@@ -161,8 +167,8 @@ async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
             upload_path=upload_path,
             frames_dir=frames_dir,
             num_frames=processing_num_frames,
-            width=metadata.width,
-            height=metadata.height,
+            width=frame_width,
+            height=frame_height,
             source_fps=float(metadata.fps),
             processing_fps=float(processing_fps),
             source_duration_sec=float(metadata.duration_sec),
@@ -172,8 +178,8 @@ async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
         return UploadResponse(
             session_id=actual_session_id,
             num_frames=processing_num_frames,
-            width=metadata.width,
-            height=metadata.height,
+            width=frame_width,
+            height=frame_height,
             source_fps=float(metadata.fps),
             processing_fps=float(processing_fps),
             source_duration_sec=float(metadata.duration_sec),

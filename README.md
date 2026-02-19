@@ -356,11 +356,20 @@ For the full model documentation, training instructions, and evaluation benchmar
 
 ```bash
 pip install -e upstream/sam3-original
+pip install -r apps/sam3-demo-backend/requirements.txt
 pip install -e apps/sam3-demo-backend
 
-uvicorn app.main:app \
+# login for gated model access (Hugging Face CLI)
+hf auth login
+# fallback if `hf` is not on PATH:
+python3 -m huggingface_hub.cli.hf auth login
+# or non-interactive:
+# hf auth login --token <YOUR_HF_TOKEN>
+# python3 -m huggingface_hub.cli.hf auth login --token <YOUR_HF_TOKEN>
+
+python3 -m uvicorn app.main:app \
   --app-dir apps/sam3-demo-backend \
-  --host 0.0.0.0 \
+  --host 127.0.0.1 \
   --port 8000
 ```
 
@@ -385,9 +394,10 @@ When running on a remote GPU VM without a public IP, use SSH tunneling:
 ```bash
 cd ~/sam3
 pip install -e upstream/sam3-original
+pip install -r apps/sam3-demo-backend/requirements.txt
 pip install -e apps/sam3-demo-backend
 
-uvicorn app.main:app \
+python3 -m uvicorn app.main:app \
   --app-dir apps/sam3-demo-backend \
   --host 127.0.0.1 \
   --port 8000

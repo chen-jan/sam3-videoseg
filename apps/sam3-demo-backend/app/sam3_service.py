@@ -14,9 +14,18 @@ class Sam3Service:
     def load_predictor(self) -> None:
         if self.predictor is not None:
             return
+        from huggingface_hub.errors import GatedRepoError
         from sam3.model_builder import build_sam3_video_predictor
 
-        self.predictor = build_sam3_video_predictor()
+        try:
+            self.predictor = build_sam3_video_predictor()
+        except GatedRepoError as exc:
+            raise RuntimeError(
+                "SAM3 model weights are gated on Hugging Face. "
+                "Run `hf auth login` (or `python3 -m huggingface_hub.cli.hf auth login`) "
+                "with an account that has access to "
+                "`facebook/sam3`, or set SAM3_DEMO_LOAD_MODEL_ON_STARTUP=0."
+            ) from exc
 
     def _ensure_predictor(self):
         if self.predictor is None:

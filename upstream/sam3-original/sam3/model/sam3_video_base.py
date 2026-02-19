@@ -380,10 +380,21 @@ class Sam3VideoBase(nn.Module):
         # Step 3: build SAM2 backbone features and store them in `feature_cache`
         backbone_cache = {}
         sam_mask_decoder = self.tracker.sam_mask_decoder
+        # `forward_video_grounding_multigpu` gathers backbone features in bf16 to save bandwidth.
+        # Convert back to the decoder conv dtype to avoid conv2d dtype mismatch at inference time.
+        fpn0 = sam3_image_out["tracker_backbone_fpn_0"].to(
+            dtype=sam_mask_decoder.conv_s0.weight.dtype
+        )
+        fpn1 = sam3_image_out["tracker_backbone_fpn_1"].to(
+            dtype=sam_mask_decoder.conv_s1.weight.dtype
+        )
+        fpn2 = sam3_image_out["tracker_backbone_fpn_2"].to(
+            dtype=sam_mask_decoder.conv_s0.weight.dtype
+        )
         tracker_backbone_fpn = [
-            sam_mask_decoder.conv_s0(sam3_image_out["tracker_backbone_fpn_0"]),
-            sam_mask_decoder.conv_s1(sam3_image_out["tracker_backbone_fpn_1"]),
-            sam3_image_out["tracker_backbone_fpn_2"],  # fpn_2 doesn't need conv
+            sam_mask_decoder.conv_s0(fpn0),
+            sam_mask_decoder.conv_s1(fpn1),
+            fpn2,  # fpn_2 doesn't need conv
         ]
         tracker_backbone_out = {
             "vision_features": tracker_backbone_fpn[-1],  # top-level feature

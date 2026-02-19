@@ -119,24 +119,35 @@ export function VideoCanvas({
       return;
     }
 
-    canvas.width = width;
-    canvas.height = height;
-
     if (!frameUrl) {
+      canvas.width = width;
+      canvas.height = height;
       context.clearRect(0, 0, width, height);
       return;
     }
 
     const image = new Image();
+    // Required for reading pixels (getImageData) from a cross-origin backend image URL.
+    image.crossOrigin = "anonymous";
     image.onload = () => {
-      context.clearRect(0, 0, width, height);
-      context.drawImage(image, 0, 0, width, height);
+      const drawWidth = image.naturalWidth > 0 ? image.naturalWidth : width;
+      const drawHeight = image.naturalHeight > 0 ? image.naturalHeight : height;
+      canvas.width = drawWidth;
+      canvas.height = drawHeight;
+      context.clearRect(0, 0, drawWidth, drawHeight);
+      context.drawImage(image, 0, 0, drawWidth, drawHeight);
 
       if (objects.length === 0) {
         return;
       }
 
-      const base = context.getImageData(0, 0, width, height);
+      let base: ImageData;
+      try {
+        base = context.getImageData(0, 0, drawWidth, drawHeight);
+      } catch (error) {
+        console.error("Unable to read canvas pixels for mask overlay.", error);
+        return;
+      }
       const data = base.data;
       const alpha = 0.42;
 
@@ -146,20 +157,38 @@ export function VideoCanvas({
           continue;
         }
         const [maskHeight, maskWidth] = object.mask_rle.size;
-        if (maskWidth !== width || maskHeight !== height) {
-          continue;
-        }
         const mask = decodeMask(object.mask_rle.size, object.mask_rle.counts);
         const [r, g, b] = hexToRgb(objectColors[object.obj_id] ?? "#1e90ff");
 
-        for (let i = 0; i < mask.length; i += 1) {
-          if (mask[i] === 0) {
-            continue;
+        if (maskWidth === drawWidth && maskHeight === drawHeight) {
+          for (let i = 0; i < mask.length; i += 1) {
+            if (mask[i] === 0) {
+              continue;
+            }
+            const offset = i * 4;
+            data[offset] = Math.round(data[offset] * (1 - alpha) + r * alpha);
+            data[offset + 1] = Math.round(data[offset + 1] * (1 - alpha) + g * alpha);
+            data[offset + 2] = Math.round(data[offset + 2] * (1 - alpha) + b * alpha);
           }
-          const offset = i * 4;
-          data[offset] = Math.round(data[offset] * (1 - alpha) + r * alpha);
-          data[offset + 1] = Math.round(data[offset + 1] * (1 - alpha) + g * alpha);
-          data[offset + 2] = Math.round(data[offset + 2] * (1 - alpha) + b * alpha);
+          continue;
+        }
+
+        const xScale = maskWidth / drawWidth;
+        const yScale = maskHeight / drawHeight;
+        for (let y = 0; y < drawHeight; y += 1) {
+          const srcY = Math.min(maskHeight - 1, Math.floor((y + 0.5) * yScale));
+          const dstRow = y * drawWidth;
+          const srcRow = srcY * maskWidth;
+          for (let x = 0; x < drawWidth; x += 1) {
+            const srcX = Math.min(maskWidth - 1, Math.floor((x + 0.5) * xScale));
+            if (mask[srcRow + srcX] === 0) {
+              continue;
+            }
+            const offset = (dstRow + x) * 4;
+            data[offset] = Math.round(data[offset] * (1 - alpha) + r * alpha);
+            data[offset + 1] = Math.round(data[offset + 1] * (1 - alpha) + g * alpha);
+            data[offset + 2] = Math.round(data[offset + 2] * (1 - alpha) + b * alpha);
+          }
         }
       }
 
