@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import nullcontext
 import logging
 from pathlib import Path
 from typing import Any
 
+import torch
 from app.export_utils import build_export_archive
 from app.mask_codec import encode_sam3_outputs
 from app.models import ExportRequest
@@ -39,15 +41,21 @@ class Sam3Service:
             self.load_predictor()
         return self.predictor
 
+    def _autocast_context(self):
+        if torch.cuda.is_available():
+            return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        return nullcontext()
+
     def start_session(self, session_id: str, resource_path: Path) -> str:
         predictor = self._ensure_predictor()
-        response = predictor.handle_request(
-            request={
-                "type": "start_session",
-                "session_id": session_id,
-                "resource_path": str(resource_path),
-            }
-        )
+        with self._autocast_context():
+            response = predictor.handle_request(
+                request={
+                    "type": "start_session",
+                    "session_id": session_id,
+                    "resource_path": str(resource_path),
+                }
+            )
         return str(response["session_id"])
 
     def add_text_prompt(
@@ -60,28 +68,29 @@ class Sam3Service:
         predictor = self._ensure_predictor()
         self.session_store.bump_generation(session_id)
 
-        if reset_first:
-            predictor.handle_request(
-                request={"type": "reset_session", "session_id": session_id}
-            )
-            self.session_store.clear_click_history(session_id)
+        with self._autocast_context():
+            if reset_first:
+                predictor.handle_request(
+                    request={"type": "reset_session", "session_id": session_id}
+                )
+                self.session_store.clear_click_history(session_id)
 
-        logger.info(
-            "text_prompt session_id=%s frame_index=%s text=%s reset_first=%s",
-            session_id,
-            frame_index,
-            text,
-            reset_first,
-        )
-        response = predictor.handle_request(
-            request={
-                "type": "add_prompt",
-                "session_id": session_id,
-                "frame_index": frame_index,
-                "text": text,
-                "reset_state": reset_first,
-            }
-        )
+            logger.info(
+                "text_prompt session_id=%s frame_index=%s text=%s reset_first=%s",
+                session_id,
+                frame_index,
+                text,
+                reset_first,
+            )
+            response = predictor.handle_request(
+                request={
+                    "type": "add_prompt",
+                    "session_id": session_id,
+                    "frame_index": frame_index,
+                    "text": text,
+                    "reset_state": reset_first,
+                }
+            )
         return int(response["frame_index"]), encode_sam3_outputs(response["outputs"])
 
     def add_click_prompt(
@@ -110,43 +119,47 @@ class Sam3Service:
         point_coords = [[x, y] for x, y, _ in all_points]
         point_labels = [label for _, _, label in all_points]
 
-        response = predictor.handle_request(
-            request={
-                "type": "add_prompt",
-                "session_id": session_id,
-                "frame_index": frame_index,
-                "obj_id": obj_id,
-                "points": point_coords,
-                "point_labels": point_labels,
-            }
-        )
+        with self._autocast_context():
+            response = predictor.handle_request(
+                request={
+                    "type": "add_prompt",
+                    "session_id": session_id,
+                    "frame_index": frame_index,
+                    "obj_id": obj_id,
+                    "points": point_coords,
+                    "point_labels": point_labels,
+                }
+            )
         return int(response["frame_index"]), encode_sam3_outputs(response["outputs"])
 
     def remove_object(self, session_id: str, obj_id: int) -> None:
         predictor = self._ensure_predictor()
         self.session_store.bump_generation(session_id)
-        predictor.handle_request(
-            request={
-                "type": "remove_object",
-                "session_id": session_id,
-                "obj_id": obj_id,
-            }
-        )
+        with self._autocast_context():
+            predictor.handle_request(
+                request={
+                    "type": "remove_object",
+                    "session_id": session_id,
+                    "obj_id": obj_id,
+                }
+            )
         self.session_store.clear_click_history_for_obj(session_id, obj_id)
 
     def reset_session(self, session_id: str) -> None:
         predictor = self._ensure_predictor()
         self.session_store.bump_generation(session_id)
-        predictor.handle_request(
-            request={"type": "reset_session", "session_id": session_id}
-        )
+        with self._autocast_context():
+            predictor.handle_request(
+                request={"type": "reset_session", "session_id": session_id}
+            )
         self.session_store.clear_click_history(session_id)
 
     def close_session(self, session_id: str) -> None:
         predictor = self._ensure_predictor()
-        predictor.handle_request(
-            request={"type": "close_session", "session_id": session_id}
-        )
+        with self._autocast_context():
+            predictor.handle_request(
+                request={"type": "close_session", "session_id": session_id}
+            )
 
     def stream_propagation(
         self,
@@ -168,12 +181,13 @@ class Sam3Service:
         if start_frame_index is not None:
             request["start_frame_index"] = start_frame_index
 
-        for response in predictor.handle_stream_request(request=request):
-            if not self.session_store.is_generation_current(session_id, generation):
-                break
-            frame_index = int(response["frame_index"])
-            objects = encode_sam3_outputs(response["outputs"])
-            yield frame_index, objects
+        with self._autocast_context():
+            for response in predictor.handle_stream_request(request=request):
+                if not self.session_store.is_generation_current(session_id, generation):
+                    break
+                frame_index = int(response["frame_index"])
+                objects = encode_sam3_outputs(response["outputs"])
+                yield frame_index, objects
 
     def _ensure_cache_entries_for_partial_propagation(self, session_id: str, predictor) -> None:
         state = self._get_inference_state(session_id)
@@ -244,15 +258,16 @@ class Sam3Service:
                     frame_end,
                     len(missing),
                 )
-                for _ in predictor.handle_stream_request(
-                    request={
-                        "type": "propagate_in_video",
-                        "session_id": session_id,
-                        "propagation_direction": "both",
-                        "start_frame_index": frame_start,
-                    }
-                ):
-                    pass
+                with self._autocast_context():
+                    for _ in predictor.handle_stream_request(
+                        request={
+                            "type": "propagate_in_video",
+                            "session_id": session_id,
+                            "propagation_direction": "both",
+                            "start_frame_index": frame_start,
+                        }
+                    ):
+                        pass
 
         return build_export_archive(
             record=record,
@@ -275,7 +290,8 @@ class Sam3Service:
                 frame_index,
             )
             try:
-                model._run_single_frame_inference(state, frame_index, reverse=False)
+                with self._autocast_context():
+                    model._run_single_frame_inference(state, frame_index, reverse=False)
             except Exception:
                 logger.warning(
                     "single_frame_seed_failed session_id=%s frame_index=%s",
@@ -294,15 +310,16 @@ class Sam3Service:
             frame_index,
         )
         try:
-            stream = predictor.handle_stream_request(
-                request={
-                    "type": "propagate_in_video",
-                    "session_id": session_id,
-                    "propagation_direction": "forward",
-                    "start_frame_index": frame_index,
-                }
-            )
-            next(stream, None)
+            with self._autocast_context():
+                stream = predictor.handle_stream_request(
+                    request={
+                        "type": "propagate_in_video",
+                        "session_id": session_id,
+                        "propagation_direction": "forward",
+                        "start_frame_index": frame_index,
+                    }
+                )
+                next(stream, None)
         except Exception:
             logger.warning(
                 "stream_seed_failed session_id=%s frame_index=%s",
