@@ -28,7 +28,6 @@ import {
   UploadResponse,
   WsErrorPayload,
 } from "../lib/types";
-import { FrameScrubber } from "../components/FrameScrubber";
 import { ObjectList } from "../components/ObjectList";
 import { PlaybackControls } from "../components/PlaybackControls";
 import { PromptPanel } from "../components/PromptPanel";
@@ -133,7 +132,6 @@ export default function Page() {
   const [isPropagating, setIsPropagating] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [status, setStatus] = useState("Upload a video to start.");
-  const [propagationStartFrame, setPropagationStartFrame] = useState("");
   const [latestError, setLatestError] = useState<AppErrorInfo | null>(null);
   const [errorHistory, setErrorHistory] = useState<AppErrorInfo[]>([]);
   const [lastClick, setLastClick] = useState<{
@@ -156,6 +154,7 @@ export default function Page() {
   const [exportIncludeImages, setExportIncludeImages] = useState(true);
   const [autoPropagateForExport, setAutoPropagateForExport] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
+  const [isExportOpen, setIsExportOpen] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -394,30 +393,15 @@ export default function Page() {
       return;
     }
 
-    let startFrame: number | null = null;
-    if (propagationStartFrame.trim() !== "") {
-      const parsed = Number(propagationStartFrame);
-      if (!Number.isInteger(parsed) || parsed < 0) {
-        pushError(new Error("Propagation start frame must be an integer >= 0"), "propagation");
-        setStatus("Propagation start frame is invalid.");
-        return;
-      }
-      startFrame = parsed;
-    }
-
     closePropagationSocket();
     setIsPropagating(true);
-    setStatus(
-      startFrame === null
-        ? "Propagation started (default start frame)."
-        : `Propagation started from frame ${startFrame}.`
-    );
+    setStatus("Propagation started across the full video.");
 
     wsRef.current = openPropagationSocket(
       session.session_id,
       {
         direction: "both",
-        start_frame_index: startFrame,
+        start_frame_index: null,
       },
       {
         onFrame: (event) => {
@@ -547,11 +531,11 @@ export default function Page() {
   }, [session?.session_id]);
 
   return (
-    <main style={{ padding: 20, display: "grid", gap: 16 }}>
+    <main style={{ padding: 17, display: "grid", gap: 14 }}>
       <h1 style={{ margin: 0 }}>SAM3 Single-User Demo</h1>
 
-      <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
-        <label style={{ display: "grid", gap: 8 }}>
+      <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 11 }}>
+        <label style={{ display: "grid", gap: 7 }}>
           <span>Upload Video (max 60s, capped to 900 frames)</span>
           <input
             type="file"
@@ -569,18 +553,18 @@ export default function Page() {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "380px minmax(0, 1fr)",
-          gap: 16,
+          gridTemplateColumns: "360px minmax(0, 1fr)",
+          gap: 14,
+          alignItems: "start",
         }}
       >
-        <div style={{ display: "grid", gap: 12, alignContent: "start" }}>
+        <div style={{ display: "grid", gap: 11, alignContent: "start" }}>
           <PromptPanel
             textPrompt={textPrompt}
             selectedObjId={selectedObjId}
             clickMode={clickMode}
             isPropagating={isPropagating}
             status={status}
-            propagationStartFrame={propagationStartFrame}
             latestError={latestError}
             errorHistory={errorHistory}
             onTextPromptChange={setTextPrompt}
@@ -589,7 +573,6 @@ export default function Page() {
             onRunPropagation={handlePropagation}
             onReset={() => void handleReset()}
             onClickModeChange={setClickMode}
-            onPropagationStartFrameChange={setPropagationStartFrame}
           />
 
           <ObjectList
@@ -617,30 +600,15 @@ export default function Page() {
             onRemove={(objId) => void handleRemoveObject(objId)}
           />
 
-          <ExportPanel
-            disabled={session === null}
-            isExporting={isExporting}
-            formats={exportFormats}
-            mergeMode={mergeMode}
-            mergeGroupsText={mergeGroupsText}
-            frameStart={exportFrameStart}
-            frameEnd={exportFrameEnd}
-            includeImages={exportIncludeImages}
-            autoPropagate={autoPropagateForExport}
-            onFormatChange={(format, checked) => {
-              setExportFormats((prev) => ({ ...prev, [format]: checked }));
-            }}
-            onMergeModeChange={setMergeMode}
-            onMergeGroupsTextChange={setMergeGroupsText}
-            onFrameStartChange={setExportFrameStart}
-            onFrameEndChange={setExportFrameEnd}
-            onIncludeImagesChange={setExportIncludeImages}
-            onAutoPropagateChange={setAutoPropagateForExport}
-            onDownload={() => void handleDownloadExport()}
-          />
+          <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 11, display: "grid", gap: 7 }}>
+            <h3 style={{ margin: 0 }}>Export</h3>
+            <button onClick={() => setIsExportOpen(true)} disabled={session === null}>
+              Open Export Settings
+            </button>
+          </div>
         </div>
 
-        <div style={{ display: "grid", gap: 12 }}>
+        <div style={{ display: "grid", gap: 11, alignContent: "start", alignItems: "start" }}>
           <VideoCanvas
             frameUrl={frameUrl}
             width={session?.width ?? 640}
@@ -663,15 +631,69 @@ export default function Page() {
               setCurrentFrame((prev) => Math.min(session.processing_num_frames - 1, prev + 1));
             }}
             processingFps={session?.processing_fps ?? 0}
-          />
-
-          <FrameScrubber
             currentFrame={currentFrame}
             totalFrames={session?.processing_num_frames ?? 1}
-            onChange={setCurrentFrame}
+            onFrameChange={setCurrentFrame}
           />
         </div>
       </div>
+
+      {isExportOpen ? (
+        <div
+          onClick={() => setIsExportOpen(false)}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.45)",
+            display: "grid",
+            placeItems: "center",
+            padding: 17,
+            zIndex: 1000,
+          }}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              width: "min(760px, 100%)",
+              maxHeight: "90vh",
+              overflow: "auto",
+              background: "#f8fafc",
+              border: "1px solid #cbd5e1",
+              borderRadius: 10,
+              padding: 11,
+              display: "grid",
+              gap: 9,
+            }}
+          >
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <h3 style={{ margin: 0 }}>Export</h3>
+              <button onClick={() => setIsExportOpen(false)}>Close</button>
+            </div>
+
+            <ExportPanel
+              disabled={session === null}
+              isExporting={isExporting}
+              formats={exportFormats}
+              mergeMode={mergeMode}
+              mergeGroupsText={mergeGroupsText}
+              frameStart={exportFrameStart}
+              frameEnd={exportFrameEnd}
+              includeImages={exportIncludeImages}
+              autoPropagate={autoPropagateForExport}
+              onFormatChange={(format, checked) => {
+                setExportFormats((prev) => ({ ...prev, [format]: checked }));
+              }}
+              onMergeModeChange={setMergeMode}
+              onMergeGroupsTextChange={setMergeGroupsText}
+              onFrameStartChange={setExportFrameStart}
+              onFrameEndChange={setExportFrameEnd}
+              onIncludeImagesChange={setExportIncludeImages}
+              onAutoPropagateChange={setAutoPropagateForExport}
+              onDownload={() => void handleDownloadExport()}
+            />
+          </div>
+        </div>
+      ) : null}
     </main>
   );
 }

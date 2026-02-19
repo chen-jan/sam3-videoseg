@@ -6,7 +6,6 @@ interface PromptPanelProps {
   clickMode: ClickMode;
   isPropagating: boolean;
   status: string;
-  propagationStartFrame: string;
   latestError: AppErrorInfo | null;
   errorHistory: AppErrorInfo[];
   onTextPromptChange: (value: string) => void;
@@ -15,7 +14,6 @@ interface PromptPanelProps {
   onRunPropagation: () => void;
   onReset: () => void;
   onClickModeChange: (mode: ClickMode) => void;
-  onPropagationStartFrameChange: (value: string) => void;
 }
 
 function ErrorPanel({ latestError, history }: { latestError: AppErrorInfo | null; history: AppErrorInfo[] }) {
@@ -73,7 +71,6 @@ export function PromptPanel({
   clickMode,
   isPropagating,
   status,
-  propagationStartFrame,
   latestError,
   errorHistory,
   onTextPromptChange,
@@ -82,7 +79,6 @@ export function PromptPanel({
   onRunPropagation,
   onReset,
   onClickModeChange,
-  onPropagationStartFrameChange,
 }: PromptPanelProps) {
   return (
     <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
@@ -125,20 +121,8 @@ export function PromptPanel({
           </small>
         </div>
 
-        <label style={{ display: "grid", gap: 4 }}>
-          <span>Propagation Start Frame (optional)</span>
-          <input
-            type="number"
-            min={0}
-            step={1}
-            value={propagationStartFrame}
-            onChange={(event) => onPropagationStartFrameChange(event.target.value)}
-            placeholder="Leave empty for default"
-          />
-        </label>
         <small style={{ color: "#666", lineHeight: 1.4 }}>
-          Propagation behavior: if start frame is 100 and direction is both, it runs forward
-          to the end and backward to frame 0.
+          Propagation runs across the full video in both directions.
         </small>
 
         <div style={{ display: "flex", gap: 8 }}>

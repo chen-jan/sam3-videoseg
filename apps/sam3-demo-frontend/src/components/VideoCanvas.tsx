@@ -264,7 +264,8 @@ export function VideoCanvas({
       }}
       style={{
         width: "100%",
-        maxHeight: 640,
+        maxHeight: "60vh",
+        display: "block",
         objectFit: "contain",
         border: "1px solid #ddd",
         borderRadius: 8,

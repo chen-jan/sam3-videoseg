@@ -18,11 +18,12 @@ input {
 }
 
 button {
-  padding: 8px 10px;
+  padding: 7px 10px;
   border: 1px solid #d1d5db;
   background: #fff;
   border-radius: 6px;
   cursor: pointer;
+  line-height: 1.2;
 }
 
 button:disabled {
@@ -31,7 +32,48 @@ button:disabled {
 }
 
 input[type="text"] {
-  padding: 8px;
+  padding: 7px 8px;
   border: 1px solid #d1d5db;
   border-radius: 6px;
+}
+
+.playback-bar {
+  display: grid;
+  gap: 9px;
+  padding: 10px 11px;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #f8fafc 0%, #eef2f7 100%);
+  font-size: 15px;
+}
+
+.playback-bar__top-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.playback-bar__buttons {
+  display: inline-flex;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.playback-bar__meta {
+  display: inline-flex;
+  gap: 10px;
+  color: #475569;
+}
+
+.playback-bar__slider {
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  .playback-bar__meta {
+    width: 100%;
+    justify-content: space-between;
+  }
 }
