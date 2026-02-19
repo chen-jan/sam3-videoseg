@@ -423,7 +423,7 @@ export default function Page() {
           obj_id: selectedObjId,
           points: [point],
         })
-      });
+      );
       applyPromptResponse(response);
       setStatus(
         `Applied ${point.label === 1 ? "positive" : "negative"} click on object ${selectedObjId}.`
