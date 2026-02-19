@@ -24,7 +24,7 @@ A monorepo wrapping Meta's **Segment Anything Model 3 (SAM3)** with an interacti
 ## Repository Layout
 
 ```
-sam3/
+sam3-videoseg/
 ├── apps/
 │   ├── sam3-demo-backend/       # FastAPI backend — video processing, SAM3 inference, mask streaming
 │   │   ├── app/
@@ -33,10 +33,12 @@ sam3/
 │   │   │   ├── session_store.py # In-memory single-session state with thread-safe locking
 │   │   │   ├── video_io.py      # FFmpeg/FFprobe: upload, probe, frame extraction
 │   │   │   ├── mask_codec.py    # COCO RLE encoding/decoding of binary masks
+│   │   │   ├── export_utils.py  # Export ZIP builder (COCO, YOLO-seg, binary PNG masks)
+│   │   │   ├── storage_library.py # Stored upload catalog (list/load/rename/delete)
 │   │   │   ├── models.py        # Pydantic request/response schemas
 │   │   │   ├── config.py        # Environment-based settings
 │   │   │   └── errors.py        # Structured error codes
-│   │   ├── tests/               # pytest tests (mask codec, video policies)
+│   │   ├── tests/               # pytest tests (service, export, storage, mask codec, video policies)
 │   │   └── pyproject.toml
 │   │
 │   └── sam3-demo-frontend/      # Next.js 15 frontend — interactive canvas UI
@@ -49,8 +51,11 @@ sam3/
 │       │   │   ├── VideoCanvas.tsx      # Canvas rendering of frames + mask overlays
 │       │   │   ├── PromptPanel.tsx      # Text input, click mode, propagation controls
 │       │   │   ├── ObjectList.tsx       # Object list with visibility/selection/removal
+│       │   │   ├── ExportPanel.tsx      # Export format, merge, and scope controls
+│       │   │   ├── StoragePanel.tsx     # Stored video browser and management UI
+│       │   │   ├── ErrorPanel.tsx       # API/WS error details and history
 │       │   │   ├── PlaybackControls.tsx # Play/pause and frame stepping
-│       │   │   └── FrameScrubber.tsx    # Timeline scrubber for frame seeking
+│       │   │   └── FrameScrubber.tsx    # (legacy) standalone slider component
 │       │   └── lib/
 │       │       ├── api.ts       # HTTP + WebSocket client functions
 │       │       └── types.ts     # TypeScript interfaces matching backend schemas
@@ -110,7 +115,8 @@ The upstream SAM3 code is kept as-is in `upstream/sam3-original/`. The demo app 
 │      │        │                                                  │
 │      │        └──► mask_codec.py ──► COCO RLE encode/decode      │
 │      │                                                           │
-│      └──► session_store.py ──► In-memory session (1 at a time)   │
+│      ├──► session_store.py ──► In-memory session (1 at a time)   │
+│      └──► storage_library.py ──► Stored upload catalog           │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
@@ -121,6 +127,7 @@ The upstream SAM3 code is kept as-is in `upstream/sam3-original/`. The demo app 
 - **Single-session simplicity** — Only one active session exists at a time, stored in-memory. This avoids distributed state for the demo use case.
 - **Streaming propagation** — Mask propagation uses a WebSocket that yields results frame-by-frame, so the UI updates in real time rather than waiting for the full video to process.
 - **Generation tokens** — Each propagation gets a monotonic generation ID. If the user starts a new propagation, stale ones are detected and skipped.
+- **Mixed-precision safety** — Predictor calls are wrapped in explicit CUDA bf16 autocast context in `sam3_service.py` to avoid intermittent dtype mismatches across request contexts.
 
 ---
 
@@ -164,7 +171,7 @@ Backend:
   ├─ sam3_service translates to SAM3 predictor request
   ├─ SAM3 runs inference: vision encoder → detector → masks + scores
   ├─ mask_codec encodes binary masks as COCO RLE
-  └─ Return: PromptResponse { frame_index, objects[] { obj_id, mask_rle, score, bbox } }
+  └─ Return: PromptResponse { frame_index, objects[] { obj_id, mask_rle, score, bbox_xywh } }
         │
         ▼
 Frontend:
@@ -206,6 +213,21 @@ Final message: { type: "propagation_done" }
 
 After propagation completes, users can scrub the timeline or play through the video. Each frame's masks are already cached — the canvas reads from `maskCache[currentFrame]` and renders overlays instantly with no additional inference needed.
 
+### 5. Stored Video Library
+
+Uploaded videos are registered in a local manifest (`tmp/sam3-demo/uploads/library.json`) and can be listed, reloaded, renamed, and deleted via `/api/storage/*` endpoints.
+
+### 6. Export
+
+The export pipeline builds a ZIP from cached masks with optional auto-propagation for missing frames. Supported formats:
+- COCO instance JSON
+- YOLO segmentation (`classes.txt` + per-frame polygon labels)
+- Per-object binary mask PNGs
+
+Object metadata is controlled by:
+- `class_name`: drives class/category assignment in COCO + YOLO
+- `instance_name`: stored on COCO annotations for per-object identity
+
 ---
 
 ## Backend (FastAPI)
@@ -219,17 +241,21 @@ After propagation completes, users can scrub the timeline or play through the vi
 | [session_store.py](apps/sam3-demo-backend/app/session_store.py) | Thread-safe single-session store with generation tracking |
 | [video_io.py](apps/sam3-demo-backend/app/video_io.py) | FFmpeg/FFprobe wrapper: save, probe, extract, count frames |
 | [mask_codec.py](apps/sam3-demo-backend/app/mask_codec.py) | Encode numpy masks to COCO RLE, decode back |
+| [export_utils.py](apps/sam3-demo-backend/app/export_utils.py) | Builds export artifacts and ZIP layout |
+| [storage_library.py](apps/sam3-demo-backend/app/storage_library.py) | Manages stored uploads and `library.json` manifest |
 | [models.py](apps/sam3-demo-backend/app/models.py) | Pydantic v2 schemas for all request/response payloads |
 | [config.py](apps/sam3-demo-backend/app/config.py) | `Settings` class reading from environment variables |
 | [errors.py](apps/sam3-demo-backend/app/errors.py) | Typed error codes (`SESSION_NOT_FOUND`, `VIDEO_TOO_LONG`, etc.) |
 
 ### Session Lifecycle
 
-1. **Upload** creates a new session (auto-cleans any previous one)
-2. **Prompt** (text or clicks) adds objects to the session's SAM3 state
-3. **Propagate** streams masks for all tracked objects across frames
-4. **Reset** clears masks/objects but keeps the video loaded
-5. **Delete** fully removes the session, upload file, and extracted frames
+1. **Upload or Load** creates a new active session (auto-cleans any previous one).
+2. **Prompt** (text or clicks) adds/updates objects in SAM3 state.
+3. **Propagate** streams masks for tracked objects across frames.
+4. **Export** packages current annotations/masks as a ZIP.
+5. **Reset** clears masks/objects but keeps the video loaded.
+6. **Delete Session** closes active SAM3 state and clears extracted frames.
+7. **Manage Stored Videos** list/load/rename/delete uploaded source videos.
 
 ---
 
@@ -242,9 +268,12 @@ After propagation completes, users can scrub the timeline or play through the vi
 | [page.tsx](apps/sam3-demo-frontend/src/app/page.tsx) | Root state manager — session, frames, masks, objects, playback |
 | [VideoCanvas.tsx](apps/sam3-demo-frontend/src/components/VideoCanvas.tsx) | Renders video frame on `<canvas>` with colored mask overlays |
 | [PromptPanel.tsx](apps/sam3-demo-frontend/src/components/PromptPanel.tsx) | Text input, click mode toggle, propagation/reset buttons |
-| [ObjectList.tsx](apps/sam3-demo-frontend/src/components/ObjectList.tsx) | Lists tracked objects; toggle visibility, select, remove |
+| [ObjectList.tsx](apps/sam3-demo-frontend/src/components/ObjectList.tsx) | Lists tracked objects; select/visibility/remove + class/instance rename |
+| [ExportPanel.tsx](apps/sam3-demo-frontend/src/components/ExportPanel.tsx) | Export format + merge + frame range controls |
+| [StoragePanel.tsx](apps/sam3-demo-frontend/src/components/StoragePanel.tsx) | Server-side upload library manager |
+| [ErrorPanel.tsx](apps/sam3-demo-frontend/src/components/ErrorPanel.tsx) | Error diagnostics with request IDs |
 | [PlaybackControls.tsx](apps/sam3-demo-frontend/src/components/PlaybackControls.tsx) | Play/pause, previous/next frame buttons |
-| [FrameScrubber.tsx](apps/sam3-demo-frontend/src/components/FrameScrubber.tsx) | Range slider for direct frame seeking |
+| [FrameScrubber.tsx](apps/sam3-demo-frontend/src/components/FrameScrubber.tsx) | Legacy standalone scrubber component |
 
 ### State Management
 
@@ -252,10 +281,12 @@ All state lives in React hooks within `page.tsx`:
 
 - **`session`** — Current `UploadResponse` (session ID, dimensions, frame count)
 - **`maskCache`** — `Record<frame_index, ObjectOutput[]>` caching decoded masks per frame
-- **`objectsById`** — `Record<obj_id, TrackedObject>` with color, visibility, label
+- **`objectsById`** — `Record<obj_id, TrackedObject>` with color, visibility, `className`, and `instanceName`
 - **`currentFrame`** — Which frame is displayed on the canvas
 - **`selectedObjId`** — Which object receives click prompts
 - **`clickMode`** — `"positive"` or `"negative"` for click label
+- **Export state** — selected formats, merge mode/groups, scope range, include-images toggle
+- **Storage state** — server storage status, stored video list, selected videos for batch delete
 
 ### Mask Rendering
 
@@ -295,6 +326,11 @@ For the full model documentation, training instructions, and evaluation benchmar
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/health` | Health check |
+| `GET` | `/api/storage/status` | Server disk usage + uploads usage summary |
+| `GET` | `/api/storage/videos` | List stored uploaded videos |
+| `POST` | `/api/storage/videos/{video_id}/load` | Load a stored video into the active session |
+| `PATCH` | `/api/storage/videos/{video_id}` | Rename stored video display name |
+| `POST` | `/api/storage/videos/delete` | Delete one or more stored videos |
 | `POST` | `/api/videos/upload` | Upload video (multipart), returns session info |
 | `GET` | `/api/sessions/{id}/frames/{index}.jpg` | Serve extracted frame as JPEG |
 | `POST` | `/api/sessions/{id}/prompt/text` | Add text prompt on a frame |
@@ -302,6 +338,7 @@ For the full model documentation, training instructions, and evaluation benchmar
 | `POST` | `/api/sessions/{id}/objects` | Create a new empty object (for click prompting) |
 | `POST` | `/api/sessions/{id}/objects/{obj_id}/remove` | Remove a tracked object |
 | `POST` | `/api/sessions/{id}/reset` | Clear all masks and objects |
+| `POST` | `/api/sessions/{id}/exports` | Build/export annotation ZIP |
 | `DELETE` | `/api/sessions/{id}` | Delete session and all artifacts |
 
 ### WebSocket
@@ -314,7 +351,7 @@ For the full model documentation, training instructions, and evaluation benchmar
 
 ```jsonc
 // Client sends:
-{ "action": "start", "direction": "both" }  // "forward", "backward", or "both"
+{ "action": "start", "direction": "both", "start_frame_index": null }  // direction: "forward" | "backward" | "both"
 
 // Server streams:
 { "type": "propagation_frame", "frame_index": 0, "objects": [...] }
@@ -337,6 +374,15 @@ For the full model documentation, training instructions, and evaluation benchmar
 
 // Text prompt request
 { frame_index, text, reset_first }
+
+// Export request
+{
+  formats: ["coco_instance", "yolo_segmentation", "binary_masks_png"],
+  object_meta: [{ obj_id, class_name, instance_name }],
+  merge: { mode: "none" | "group" | "destructive_export", groups: [{ name, obj_ids }] },
+  scope: { frame_start, frame_end, include_images },
+  auto_propagate_if_incomplete
+}
 ```
 
 ---
@@ -422,6 +468,7 @@ All backend settings are configured via environment variables:
 | `SAM3_DEMO_TMP_DIR` | `tmp/sam3-demo` | Working directory for uploads and frames |
 | `SAM3_DEMO_MAX_DURATION_SEC` | `60` | Maximum allowed video duration in seconds |
 | `SAM3_DEMO_MAX_FRAMES` | `900` | Maximum extracted frames (FPS is downsampled to fit) |
+| `SAM3_DEMO_DEFAULT_PROPAGATION_DIRECTION` | `both` | Backend default propagation direction setting (reserved; current UI sends direction explicitly) |
 | `SAM3_DEMO_LOAD_MODEL_ON_STARTUP` | `0` | Set to `1` to preload the SAM3 model at startup |
 
 ---

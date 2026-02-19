@@ -65,7 +65,7 @@
 - Resolution/fps caps by plan tier.
 
 ## 10) Migration Path from Current Demo
-1. Current: single user, in-memory state, local files.
+1. Current: single user, in-memory active session, local files, stored-upload manifest, synchronous export API.
 2. Beta: Redis session routing + object storage + auth.
 3. Public: multi-worker GPU pool + queue + Postgres + full observability.
 4. Scale: autoscaling + tenant quotas + async exports + cost-aware scheduling.

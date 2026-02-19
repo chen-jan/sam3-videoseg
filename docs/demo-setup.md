@@ -5,6 +5,8 @@
 - Upload limit: **60 seconds**.
 - Inference frame cap: **900 frames** (server-side fps downsampling).
 - Timeline uses processed frames/fps (not original source fps when downsampled).
+- Stored uploads are cataloged on disk and can be reloaded via the Storage panel.
+- Export supports COCO instance, YOLO segmentation, and binary mask PNGs.
 
 ## Prerequisites
 - Python 3.10+
@@ -41,7 +43,14 @@ Optional env vars:
 export SAM3_DEMO_TMP_DIR=tmp/sam3-demo
 export SAM3_DEMO_MAX_DURATION_SEC=60
 export SAM3_DEMO_MAX_FRAMES=900
+export SAM3_DEMO_DEFAULT_PROPAGATION_DIRECTION=both
 export SAM3_DEMO_LOAD_MODEL_ON_STARTUP=0
+```
+
+Quick backend test run:
+
+```bash
+pytest -q apps/sam3-demo-backend/tests
 ```
 
 ## Local Frontend Run
@@ -84,6 +93,12 @@ NEXT_PUBLIC_BACKEND_URL=http://localhost:8000 npm run dev
 ```
 
 ## API Surface
+- `GET /api/health`
+- `GET /api/storage/status`
+- `GET /api/storage/videos`
+- `POST /api/storage/videos/{video_id}/load`
+- `PATCH /api/storage/videos/{video_id}`
+- `POST /api/storage/videos/delete`
 - `POST /api/videos/upload`
 - `GET /api/sessions/{session_id}/frames/{frame_index}.jpg`
 - `POST /api/sessions/{session_id}/prompt/text`
@@ -91,8 +106,19 @@ NEXT_PUBLIC_BACKEND_URL=http://localhost:8000 npm run dev
 - `POST /api/sessions/{session_id}/prompt/clicks`
 - `POST /api/sessions/{session_id}/objects/{obj_id}/remove`
 - `POST /api/sessions/{session_id}/reset`
+- `POST /api/sessions/{session_id}/exports`
 - `DELETE /api/sessions/{session_id}`
 - `WS /api/sessions/{session_id}/propagate`
+
+WebSocket start message:
+
+```json
+{ "action": "start", "direction": "both", "start_frame_index": null }
+```
+
+Export naming behavior:
+- `class_name` controls category names in COCO and class names/index mapping in YOLO.
+- `instance_name` is preserved per object in COCO annotations.
 
 ## Known Limitations
 - Single-session, in-memory backend state.
