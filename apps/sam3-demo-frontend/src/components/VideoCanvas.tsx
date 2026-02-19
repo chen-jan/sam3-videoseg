@@ -49,7 +49,7 @@ function decodeCompressedCounts(counts: string): number[] {
     if (chunk & 0x10) {
       value |= -1 << (5 * shift);
     }
-    if (runs.length > 1) {
+    if (runs.length > 2) {
       value += runs[runs.length - 2];
     }
     runs.push(value);

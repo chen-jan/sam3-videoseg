@@ -75,6 +75,12 @@ export function PromptPanel({
           <button onClick={onReset}>Reset Session</button>
         </div>
 
+        <small style={{ color: "#666", lineHeight: 1.4 }}>
+          Click prompt flow: 1) Press "+ Add Object" 2) Left-click positive / right-click
+          negative points on the image 3) Run Propagation. Manual click objects use negative
+          ids by design.
+        </small>
+
         <div style={{ minHeight: 24, color: "#374151" }}>{status}</div>
       </div>
     </div>

@@ -179,7 +179,10 @@ export default function Page() {
       };
       setObjectsById((prev) => ({ ...prev, [object.objId]: object }));
       setSelectedObjId(object.objId);
-      setStatus(`Added object ${object.objId}.`);
+      setStatus(
+        `Added manual object ${Math.abs(object.objId)} (id ${object.objId}). ` +
+          `Now click on the image: left=positive, right=negative.`
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Failed to add object: ${message}`);

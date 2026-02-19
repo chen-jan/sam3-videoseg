@@ -15,6 +15,9 @@ export function ObjectList({
   onToggleVisibility,
   onRemove,
 }: ObjectListProps) {
+  const objectLabel = (objId: number) =>
+    objId < 0 ? `Manual ${Math.abs(objId)} (id ${objId})` : `Detected ${objId}`;
+
   return (
     <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
       <h3 style={{ marginTop: 0 }}>Objects</h3>
@@ -54,8 +57,9 @@ export function ObjectList({
                   background: "transparent",
                   cursor: "pointer",
                 }}
+                title={`Raw object id: ${object.objId}`}
               >
-                {object.objId}
+                {objectLabel(object.objId)}
               </button>
               <button onClick={() => onToggleVisibility(object.objId)}>
                 {object.visible ? "Hide" : "Show"}
