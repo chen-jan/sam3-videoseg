@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import logging
+import math
 import uuid
 from pathlib import Path
 
 from fastapi import (
+    Form,
     HTTPException,
     FastAPI,
     File,
@@ -172,7 +174,10 @@ def _cleanup_active_session() -> None:
     session_store.clear_active()
 
 
-def _start_session_from_video(video_path: Path) -> UploadResponse:
+def _start_session_from_video(
+    video_path: Path,
+    requested_processing_fps: float | None = None,
+) -> UploadResponse:
     metadata = probe_video(video_path)
     if not is_duration_allowed(metadata.duration_sec, settings.max_duration_sec):
         raise http_error(
@@ -185,6 +190,7 @@ def _start_session_from_video(video_path: Path) -> UploadResponse:
         source_fps=metadata.fps,
         duration_sec=metadata.duration_sec,
         max_frames=settings.max_frames,
+        requested_fps=requested_processing_fps,
     )
 
     _cleanup_active_session()
@@ -323,7 +329,10 @@ def delete_stored_videos(req: DeleteStoredVideosRequest) -> DeleteStoredVideosRe
 
 
 @app.post("/api/videos/upload", response_model=UploadResponse)
-async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
+async def upload_video(
+    file: UploadFile = File(...),
+    processing_fps: float | None = Form(default=None),
+) -> UploadResponse:
     filename = file.filename or "upload.mp4"
     ext = Path(filename).suffix.lower() or ".mp4"
     if ext not in ALLOWED_VIDEO_EXTS:
@@ -333,12 +342,23 @@ async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
             f"Unsupported extension '{ext}'. Allowed: {sorted(ALLOWED_VIDEO_EXTS)}",
         )
 
+    if processing_fps is not None:
+        if not math.isfinite(processing_fps) or processing_fps <= 0:
+            raise http_error(
+                400,
+                ErrorCode.BAD_REQUEST,
+                "processing_fps must be a finite number > 0",
+            )
+
     video_id = uuid.uuid4().hex
     upload_path = settings.uploads_dir / f"{video_id}{ext}"
     await save_upload_file(file, upload_path)
 
     try:
-        response = _start_session_from_video(upload_path)
+        response = _start_session_from_video(
+            upload_path,
+            requested_processing_fps=processing_fps,
+        )
         storage_library.register_video(
             video_id=video_id,
             file_name=upload_path.name,

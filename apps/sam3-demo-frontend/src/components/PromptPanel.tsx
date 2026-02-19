@@ -1,10 +1,17 @@
 import { ClickMode } from "../lib/types";
 
+interface PropagationProgress {
+  completed: number;
+  total: number;
+  percent: number;
+}
+
 interface PromptPanelProps {
   textPrompt: string;
   selectedObjId: number | null;
   clickMode: ClickMode;
   isPropagating: boolean;
+  propagationProgress: PropagationProgress | null;
   status: string;
   onTextPromptChange: (value: string) => void;
   onSubmitTextPrompt: () => void;
@@ -19,6 +26,7 @@ export function PromptPanel({
   selectedObjId,
   clickMode,
   isPropagating,
+  propagationProgress,
   status,
   onTextPromptChange,
   onSubmitTextPrompt,
@@ -40,17 +48,10 @@ export function PromptPanel({
             placeholder="e.g. person in red shirt"
           />
           <small style={{ color: "#666" }}>
-            Text prompt applies semantic detection on this frame and is additive (`reset_first=false`).
-          </small>
-          <small style={{ color: "#666" }}>
-            Limitation: it can still update existing detected objects, so it cannot guarantee
-            "add-only new class" behavior.
-          </small>
-          <small style={{ color: "#666" }}>
-            For strict object creation, use "+ Add Object" and refine with click prompts.
+            Text prompt adds/updates detections; it is not guaranteed add-only.
           </small>
         </label>
-        <button onClick={onSubmitTextPrompt}>Apply Text Prompt (Add/Update)</button>
+        <button onClick={onSubmitTextPrompt}>Apply Text Prompt</button>
         <button onClick={onAddObject}>+ Add Object (for click prompts)</button>
 
         <div style={{ display: "grid", gap: 4 }}>
@@ -88,6 +89,33 @@ export function PromptPanel({
           </button>
           <button onClick={onReset}>Reset Session</button>
         </div>
+
+        {propagationProgress !== null ? (
+          <div style={{ display: "grid", gap: 4 }}>
+            <small style={{ color: "#666" }}>
+              Progress: {propagationProgress.completed}/{propagationProgress.total} frames (
+              {Math.round(propagationProgress.percent)}%)
+            </small>
+            <div
+              style={{
+                width: "100%",
+                height: 8,
+                borderRadius: 999,
+                background: "#e5e7eb",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  width: `${Math.max(0, Math.min(100, propagationProgress.percent))}%`,
+                  height: "100%",
+                  background: "#2563eb",
+                  transition: "width 120ms linear",
+                }}
+              />
+            </div>
+          </div>
+        ) : null}
 
         <small style={{ color: "#666", lineHeight: 1.4 }}>
           Click prompt flow: 1) Press "+ Add Object" 2) Left-click positive / right-click

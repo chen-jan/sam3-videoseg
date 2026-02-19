@@ -117,11 +117,23 @@ def is_duration_allowed(duration_sec: float, max_duration_sec: float) -> bool:
     return duration_sec <= max_duration_sec
 
 
-def compute_processing_fps(source_fps: float, duration_sec: float, max_frames: int) -> float:
+def compute_processing_fps(
+    source_fps: float,
+    duration_sec: float,
+    max_frames: int,
+    requested_fps: float | None = None,
+) -> float:
+    source_fps = max(source_fps, 1.0)
     if duration_sec <= 0:
-        return max(source_fps, 1.0)
-    cap_fps = max_frames / duration_sec
-    fps = min(max(source_fps, 1.0), cap_fps)
+        upper_bound = source_fps
+    else:
+        upper_bound = min(source_fps, max_frames / duration_sec)
+    upper_bound = max(upper_bound, 0.1)
+
+    if requested_fps is None:
+        return upper_bound
+
+    fps = min(float(requested_fps), upper_bound)
     return max(fps, 0.1)
 
 

@@ -92,9 +92,20 @@ export function buildFrameUrl(sessionId: string, frameIndex: number): string {
   return `${BACKEND_URL}/api/sessions/${sessionId}/frames/${frameIndex}.jpg`;
 }
 
-export async function uploadVideo(file: File): Promise<UploadResponse> {
+export async function uploadVideo(
+  file: File,
+  options?: { processingFps?: number | null }
+): Promise<UploadResponse> {
   const form = new FormData();
   form.append("file", file);
+  if (
+    options?.processingFps !== undefined &&
+    options.processingFps !== null &&
+    Number.isFinite(options.processingFps) &&
+    options.processingFps > 0
+  ) {
+    form.append("processing_fps", String(options.processingFps));
+  }
   return requestJson<UploadResponse>(`${BACKEND_URL}/api/videos/upload`, {
     method: "POST",
     body: form,

@@ -131,6 +131,8 @@ function parseMergeGroups(raw: string): { name: string; obj_ids: number[] }[] {
 }
 
 export default function Page() {
+  type UploadFpsMode = "auto" | "custom";
+
   const [session, setSession] = useState<UploadResponse | null>(null);
   const [currentFrame, setCurrentFrame] = useState(0);
   const [maskCache, setMaskCache] = useState<Record<number, ObjectOutput[]>>({});
@@ -139,9 +141,18 @@ export default function Page() {
   const [clickMode, setClickMode] = useState<ClickMode>("positive");
   const [textPrompt, setTextPrompt] = useState("person");
   const [isPropagating, setIsPropagating] = useState(false);
+  const [propagationProgress, setPropagationProgress] = useState<{
+    completed: number;
+    total: number;
+    percent: number;
+  } | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [isFrameLoading, setIsFrameLoading] = useState(false);
   const [frameLoadingLabel, setFrameLoadingLabel] = useState("Loading video...");
+  const [pendingUploadFile, setPendingUploadFile] = useState<File | null>(null);
+  const [isUploadOptionsOpen, setIsUploadOptionsOpen] = useState(false);
+  const [uploadFpsMode, setUploadFpsMode] = useState<UploadFpsMode>("auto");
+  const [uploadCustomFps, setUploadCustomFps] = useState("15");
   const [status, setStatus] = useState("Upload a video to start.");
   const [latestError, setLatestError] = useState<AppErrorInfo | null>(null);
   const [errorHistory, setErrorHistory] = useState<AppErrorInfo[]>([]);
@@ -175,6 +186,7 @@ export default function Page() {
 
   const wsRef = useRef<WebSocket | null>(null);
   const promptMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
+  const propagationSeenFramesRef = useRef<Set<number>>(new Set());
 
   const objects = useMemo(
     () => Object.values(objectsById).sort((a, b) => a.objId - b.objId),
@@ -269,6 +281,8 @@ export default function Page() {
     setObjectsById({});
     setSelectedObjId(null);
     setIsPropagating(false);
+    setPropagationProgress(null);
+    propagationSeenFramesRef.current.clear();
     setIsPlaying(false);
     setLastClick(null);
     setStatus(
@@ -294,7 +308,7 @@ export default function Page() {
     }
   };
 
-  const handleUpload = async (file: File) => {
+  const handleUpload = async (file: File, requestedProcessingFps?: number) => {
     try {
       setFrameLoadingLabel("Loading uploaded video...");
       setIsFrameLoading(true);
@@ -303,7 +317,9 @@ export default function Page() {
       if (session !== null) {
         await deleteSession(session.session_id);
       }
-      const uploaded = await uploadVideo(file);
+      const uploaded = await uploadVideo(file, {
+        processingFps: requestedProcessingFps ?? null,
+      });
       setActiveStoredVideoId(null);
       applyLoadedSession(uploaded);
       if (isStorageOpen) {
@@ -315,6 +331,27 @@ export default function Page() {
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Upload failed: ${message}`);
     }
+  };
+
+  const handleConfirmUploadOptions = async () => {
+    if (pendingUploadFile === null) {
+      return;
+    }
+
+    let requestedFps: number | undefined;
+    if (uploadFpsMode === "custom") {
+      const parsed = Number(uploadCustomFps);
+      if (!Number.isFinite(parsed) || parsed <= 0) {
+        setStatus("Custom upload FPS must be a number greater than 0.");
+        return;
+      }
+      requestedFps = parsed;
+    }
+
+    const file = pendingUploadFile;
+    setPendingUploadFile(null);
+    setIsUploadOptionsOpen(false);
+    await handleUpload(file, requestedFps);
   };
 
   const handleSubmitTextPrompt = async () => {
@@ -439,6 +476,8 @@ export default function Page() {
       setObjectsById({});
       setSelectedObjId(null);
       setIsPropagating(false);
+      setPropagationProgress(null);
+      propagationSeenFramesRef.current.clear();
       setLastClick(null);
       setStatus("Session reset.");
     } catch (error) {
@@ -455,6 +494,12 @@ export default function Page() {
 
     closePropagationSocket();
     setIsPropagating(true);
+    propagationSeenFramesRef.current = new Set();
+    setPropagationProgress({
+      completed: 0,
+      total: session.processing_num_frames,
+      percent: 0,
+    });
     setStatus("Propagation started across the full video.");
 
     wsRef.current = openPropagationSocket(
@@ -467,17 +512,25 @@ export default function Page() {
         onFrame: (event) => {
           setMaskCache((prev) => ({ ...prev, [event.frame_index]: event.objects }));
           upsertObjectsFromOutputs(event.objects);
+          propagationSeenFramesRef.current.add(event.frame_index);
+          const completed = propagationSeenFramesRef.current.size;
+          const total = session.processing_num_frames;
+          const percent = total > 0 ? (completed / total) * 100 : 0;
+          setPropagationProgress({ completed, total, percent });
           setStatus(
             `Propagating... frame ${event.frame_index + 1}/${session.processing_num_frames}`
           );
         },
         onDone: () => {
           setIsPropagating(false);
+          const total = session.processing_num_frames;
+          setPropagationProgress({ completed: total, total, percent: 100 });
           setStatus("Propagation complete.");
           closePropagationSocket();
         },
         onError: (event) => {
           setIsPropagating(false);
+          setPropagationProgress(null);
           if (event instanceof Error) {
             pushError(event, "propagation");
             setStatus(`Propagation error: ${event.message}`);
@@ -693,12 +746,96 @@ export default function Page() {
             onChange={(event) => {
               const file = event.target.files?.[0];
               if (file) {
-                void handleUpload(file);
+                setPendingUploadFile(file);
+                setUploadFpsMode("auto");
+                setIsUploadOptionsOpen(true);
               }
+              event.target.value = "";
             }}
           />
         </label>
       </div>
+
+      {isUploadOptionsOpen ? (
+        <div
+          onClick={() => {
+            setIsUploadOptionsOpen(false);
+            setPendingUploadFile(null);
+          }}
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(15, 23, 42, 0.45)",
+            display: "grid",
+            placeItems: "center",
+            padding: 17,
+            zIndex: 1100,
+          }}
+        >
+          <div
+            onClick={(event) => event.stopPropagation()}
+            style={{
+              width: "min(520px, 100%)",
+              background: "#f8fafc",
+              border: "1px solid #cbd5e1",
+              borderRadius: 10,
+              padding: 12,
+              display: "grid",
+              gap: 10,
+            }}
+          >
+            <h3 style={{ margin: 0 }}>Upload Settings</h3>
+            <small style={{ color: "#666" }}>
+              File: {pendingUploadFile?.name ?? "none"}
+            </small>
+
+            <div style={{ display: "grid", gap: 8 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="radio"
+                  name="upload-fps-mode"
+                  checked={uploadFpsMode === "auto"}
+                  onChange={() => setUploadFpsMode("auto")}
+                />
+                <span>Auto FPS (recommended)</span>
+              </label>
+              <label style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <input
+                  type="radio"
+                  name="upload-fps-mode"
+                  checked={uploadFpsMode === "custom"}
+                  onChange={() => setUploadFpsMode("custom")}
+                />
+                <span>Custom extraction FPS</span>
+              </label>
+              <input
+                type="number"
+                min="0.1"
+                step="0.1"
+                value={uploadCustomFps}
+                disabled={uploadFpsMode !== "custom"}
+                onChange={(event) => setUploadCustomFps(event.target.value)}
+                placeholder="e.g. 12"
+              />
+              <small style={{ color: "#666" }}>
+                Final FPS is capped by source FPS and the 900-frame session limit.
+              </small>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button
+                onClick={() => {
+                  setIsUploadOptionsOpen(false);
+                  setPendingUploadFile(null);
+                }}
+              >
+                Cancel
+              </button>
+              <button onClick={() => void handleConfirmUploadOptions()}>Start Upload</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div
         style={{
@@ -714,6 +851,7 @@ export default function Page() {
             selectedObjId={selectedObjId}
             clickMode={clickMode}
             isPropagating={isPropagating}
+            propagationProgress={propagationProgress}
             status={status}
             onTextPromptChange={setTextPrompt}
             onSubmitTextPrompt={() => void handleSubmitTextPrompt()}
