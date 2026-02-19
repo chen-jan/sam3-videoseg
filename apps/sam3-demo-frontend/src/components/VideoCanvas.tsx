@@ -19,6 +19,9 @@ interface VideoCanvasProps {
   selectedObjId: number | null;
   clickMode: "positive" | "negative";
   lastClick: LastClickMarker | null;
+  showLoadingOverlay?: boolean;
+  loadingLabel?: string;
+  onFrameRendered?: () => void;
   onPointPrompt: (point: PointInput) => void;
 }
 
@@ -131,6 +134,9 @@ export function VideoCanvas({
   selectedObjId,
   clickMode,
   lastClick,
+  showLoadingOverlay = false,
+  loadingLabel = "Loading video...",
+  onFrameRendered,
   onPointPrompt,
 }: VideoCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -241,6 +247,8 @@ export function VideoCanvas({
         context.font = "14px monospace";
         context.fillText(`Selected obj: ${selectedObjId}`, 14, 25);
       }
+
+      onFrameRendered?.();
     };
     image.src = frameUrl;
   }, [
@@ -252,6 +260,7 @@ export function VideoCanvas({
     visibilityByObjectId,
     lastClick,
     selectedObjId,
+    onFrameRendered,
   ]);
 
   const emitPoint = (event: MouseEvent<HTMLCanvasElement>, label: 0 | 1) => {
@@ -285,25 +294,62 @@ export function VideoCanvas({
   };
 
   return (
-    <canvas
-      ref={canvasRef}
-      onClick={(event) => {
-        const label = clickMode === "positive" ? 1 : 0;
-        emitPoint(event, label);
-      }}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        emitPoint(event, 0);
-      }}
-      style={{
-        width: "100%",
-        maxHeight: "72vh",
-        display: "block",
-        objectFit: "contain",
-        border: "1px solid #ddd",
-        borderRadius: 8,
-        cursor: selectedObjId === null ? "not-allowed" : "crosshair",
-      }}
-    />
+    <div style={{ position: "relative" }}>
+      <canvas
+        ref={canvasRef}
+        onClick={(event) => {
+          const label = clickMode === "positive" ? 1 : 0;
+          emitPoint(event, label);
+        }}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          emitPoint(event, 0);
+        }}
+        style={{
+          width: "100%",
+          maxHeight: "72vh",
+          display: "block",
+          objectFit: "contain",
+          border: "1px solid #ddd",
+          borderRadius: 8,
+          cursor: selectedObjId === null ? "not-allowed" : "crosshair",
+        }}
+      />
+      {showLoadingOverlay ? (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            background: "rgba(248, 250, 252, 0.82)",
+            borderRadius: 8,
+            display: "grid",
+            placeItems: "center",
+            gap: 8,
+          }}
+        >
+          <div
+            style={{
+              width: 28,
+              height: 28,
+              border: "3px solid #cbd5e1",
+              borderTopColor: "#2563eb",
+              borderRadius: "50%",
+              animation: "sam3-spin 0.9s linear infinite",
+            }}
+          />
+          <div style={{ fontSize: 13, color: "#334155" }}>{loadingLabel}</div>
+        </div>
+      ) : null}
+      <style jsx>{`
+        @keyframes sam3-spin {
+          from {
+            transform: rotate(0deg);
+          }
+          to {
+            transform: rotate(360deg);
+          }
+        }
+      `}</style>
+    </div>
   );
 }

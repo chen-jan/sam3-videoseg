@@ -140,6 +140,8 @@ export default function Page() {
   const [textPrompt, setTextPrompt] = useState("person");
   const [isPropagating, setIsPropagating] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isFrameLoading, setIsFrameLoading] = useState(false);
+  const [frameLoadingLabel, setFrameLoadingLabel] = useState("Loading video...");
   const [status, setStatus] = useState("Upload a video to start.");
   const [latestError, setLatestError] = useState<AppErrorInfo | null>(null);
   const [errorHistory, setErrorHistory] = useState<AppErrorInfo[]>([]);
@@ -284,6 +286,8 @@ export default function Page() {
 
   const handleUpload = async (file: File) => {
     try {
+      setFrameLoadingLabel("Loading uploaded video...");
+      setIsFrameLoading(true);
       setStatus("Uploading and preprocessing video...");
       closePropagationSocket();
       if (session !== null) {
@@ -296,6 +300,7 @@ export default function Page() {
         await refreshStorage();
       }
     } catch (error) {
+      setIsFrameLoading(false);
       pushError(error, "upload");
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Upload failed: ${message}`);
@@ -488,6 +493,9 @@ export default function Page() {
 
   const handleLoadStoredVideo = async (videoId: string) => {
     try {
+      setIsStorageOpen(false);
+      setFrameLoadingLabel("Loading stored video...");
+      setIsFrameLoading(true);
       setStatus("Loading video from server storage...");
       closePropagationSocket();
       if (session !== null) {
@@ -498,6 +506,7 @@ export default function Page() {
       applyLoadedSession(uploaded);
       await refreshStorage();
     } catch (error) {
+      setIsFrameLoading(false);
       pushError(error, "storage_load");
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Stored video load failed: ${message}`);
@@ -603,6 +612,12 @@ export default function Page() {
       setIsExporting(false);
     }
   };
+
+  useEffect(() => {
+    if (session === null) {
+      setIsFrameLoading(false);
+    }
+  }, [session]);
 
   useEffect(() => {
     if (!isPlaying || session === null) {
@@ -727,6 +742,9 @@ export default function Page() {
             selectedObjId={selectedObjId}
             clickMode={clickMode}
             lastClick={currentFrameLastClick}
+            showLoadingOverlay={isFrameLoading}
+            loadingLabel={frameLoadingLabel}
+            onFrameRendered={() => setIsFrameLoading(false)}
             onPointPrompt={(point) => void handlePointPrompt(point)}
           />
 
