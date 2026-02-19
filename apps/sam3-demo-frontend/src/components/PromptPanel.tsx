@@ -40,10 +40,17 @@ export function PromptPanel({
             placeholder="e.g. person in red shirt"
           />
           <small style={{ color: "#666" }}>
-            Text prompts are additive and keep existing objects in the session.
+            Text prompt applies semantic detection on this frame and is additive (`reset_first=false`).
+          </small>
+          <small style={{ color: "#666" }}>
+            Limitation: it can still update existing detected objects, so it cannot guarantee
+            "add-only new class" behavior.
+          </small>
+          <small style={{ color: "#666" }}>
+            For strict object creation, use "+ Add Object" and refine with click prompts.
           </small>
         </label>
-        <button onClick={onSubmitTextPrompt}>Apply Text Prompt</button>
+        <button onClick={onSubmitTextPrompt}>Apply Text Prompt (Add/Update)</button>
         <button onClick={onAddObject}>+ Add Object (for click prompts)</button>
 
         <div style={{ display: "grid", gap: 4 }}>

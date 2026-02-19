@@ -174,6 +174,7 @@ export default function Page() {
   const [activeStoredVideoId, setActiveStoredVideoId] = useState<string | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
+  const promptMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
 
   const objects = useMemo(
     () => Object.values(objectsById).sort((a, b) => a.objId - b.objId),
@@ -218,6 +219,15 @@ export default function Page() {
       wsRef.current.close();
       wsRef.current = null;
     }
+  };
+
+  const enqueuePromptMutation = async <T,>(operation: () => Promise<T>): Promise<T> => {
+    const next = promptMutationQueueRef.current.catch(() => undefined).then(operation);
+    promptMutationQueueRef.current = next.then(
+      () => undefined,
+      () => undefined
+    );
+    return next;
   };
 
   const upsertObjectsFromOutputs = (outputs: ObjectOutput[]) => {
@@ -313,11 +323,13 @@ export default function Page() {
     }
     try {
       setStatus("Running text prompt...");
-      const response = await addTextPrompt(session.session_id, {
-        frame_index: currentFrame,
-        text: textPrompt,
-        reset_first: false,
-      });
+      const response = await enqueuePromptMutation(() =>
+        addTextPrompt(session.session_id, {
+          frame_index: currentFrame,
+          text: textPrompt,
+          reset_first: false,
+        })
+      );
       applyPromptResponse(response);
       setStatus("Text prompt applied.");
     } catch (error) {
@@ -368,10 +380,12 @@ export default function Page() {
     });
 
     try {
-      const response = await addClickPrompt(session.session_id, {
-        frame_index: currentFrame,
-        obj_id: selectedObjId,
-        points: [point],
+      const response = await enqueuePromptMutation(() =>
+        addClickPrompt(session.session_id, {
+          frame_index: currentFrame,
+          obj_id: selectedObjId,
+          points: [point],
+        })
       });
       applyPromptResponse(response);
       setStatus(
