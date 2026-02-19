@@ -637,9 +637,15 @@ export default function Page() {
     <main style={{ padding: 17, display: "grid", gap: 14 }}>
       <h1 style={{ margin: 0 }}>SAM3 Single-User Demo</h1>
 
-      <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 11 }}>
+      <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 11, display: "grid", gap: 9 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+          <span style={{ fontWeight: 500 }}>Upload Video (max 60s, capped to 900 frames)</span>
+          <button onClick={() => void handleOpenStorage()} style={{ padding: "4px 10px", fontSize: 13 }}>
+            Storage
+          </button>
+        </div>
         <label style={{ display: "grid", gap: 7 }}>
-          <span>Upload Video (max 60s, capped to 900 frames)</span>
+          <span style={{ color: "#666", fontSize: 13 }}>Choose a video file</span>
           <input
             type="file"
             accept="video/*"
@@ -708,15 +714,6 @@ export default function Page() {
             </button>
           </div>
 
-          <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 11, display: "grid", gap: 7 }}>
-            <h3 style={{ margin: 0 }}>Storage</h3>
-            <button onClick={() => void handleOpenStorage()}>
-              Open Storage Manager
-            </button>
-            <small style={{ color: "#666" }}>
-              Check server free space and manage stored uploads.
-            </small>
-          </div>
         </div>
 
         <div style={{ display: "grid", gap: 11, alignContent: "start", alignItems: "start" }}>
@@ -835,6 +832,7 @@ export default function Page() {
         onRename={(videoId, displayName) => void handleRenameStoredVideo(videoId, displayName)}
         onDeleteSelected={() => void handleDeleteSelectedStoredVideos()}
       />
+
     </main>
   );
 }
