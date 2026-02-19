@@ -2,6 +2,13 @@ import { MouseEvent, useEffect, useRef } from "react";
 
 import { ObjectOutput, PointInput } from "../lib/types";
 
+interface LastClickMarker {
+  x: number;
+  y: number;
+  label: 0 | 1;
+  objId: number;
+}
+
 interface VideoCanvasProps {
   frameUrl: string | null;
   width: number;
@@ -11,6 +18,7 @@ interface VideoCanvasProps {
   visibilityByObjectId: Record<number, boolean>;
   selectedObjId: number | null;
   clickMode: "positive" | "negative";
+  lastClick: LastClickMarker | null;
   onPointPrompt: (point: PointInput) => void;
 }
 
@@ -57,7 +65,7 @@ function decodeCompressedCounts(counts: string): number[] {
   return runs;
 }
 
-function decodeMask(size: [number, number], counts: string): Uint8Array {
+function decodeMask(size: [number, number] | number[], counts: string): Uint8Array {
   const cacheKey = `${size[0]}x${size[1]}:${counts}`;
   const cached = decodedMaskCache.get(cacheKey);
   if (cached) {
@@ -105,6 +113,7 @@ export function VideoCanvas({
   visibilityByObjectId,
   selectedObjId,
   clickMode,
+  lastClick,
   onPointPrompt,
 }: VideoCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -127,7 +136,6 @@ export function VideoCanvas({
     }
 
     const image = new Image();
-    // Required for reading pixels (getImageData) from a cross-origin backend image URL.
     image.crossOrigin = "anonymous";
     image.onload = () => {
       const drawWidth = image.naturalWidth > 0 ? image.naturalWidth : width;
@@ -137,65 +145,97 @@ export function VideoCanvas({
       context.clearRect(0, 0, drawWidth, drawHeight);
       context.drawImage(image, 0, 0, drawWidth, drawHeight);
 
-      if (objects.length === 0) {
-        return;
-      }
-
-      let base: ImageData;
-      try {
-        base = context.getImageData(0, 0, drawWidth, drawHeight);
-      } catch (error) {
-        console.error("Unable to read canvas pixels for mask overlay.", error);
-        return;
-      }
-      const data = base.data;
-      const alpha = 0.42;
-
-      for (const object of objects) {
-        const visible = visibilityByObjectId[object.obj_id] ?? true;
-        if (!visible) {
-          continue;
+      if (objects.length > 0) {
+        let base: ImageData;
+        try {
+          base = context.getImageData(0, 0, drawWidth, drawHeight);
+        } catch (error) {
+          console.error("Unable to read canvas pixels for mask overlay.", error);
+          return;
         }
-        const [maskHeight, maskWidth] = object.mask_rle.size;
-        const mask = decodeMask(object.mask_rle.size, object.mask_rle.counts);
-        const [r, g, b] = hexToRgb(objectColors[object.obj_id] ?? "#1e90ff");
 
-        if (maskWidth === drawWidth && maskHeight === drawHeight) {
-          for (let i = 0; i < mask.length; i += 1) {
-            if (mask[i] === 0) {
-              continue;
-            }
-            const offset = i * 4;
-            data[offset] = Math.round(data[offset] * (1 - alpha) + r * alpha);
-            data[offset + 1] = Math.round(data[offset + 1] * (1 - alpha) + g * alpha);
-            data[offset + 2] = Math.round(data[offset + 2] * (1 - alpha) + b * alpha);
+        const data = base.data;
+        const alpha = 0.42;
+
+        for (const object of objects) {
+          const visible = visibilityByObjectId[object.obj_id] ?? true;
+          if (!visible) {
+            continue;
           }
-          continue;
-        }
+          const [maskHeight, maskWidth] = object.mask_rle.size;
+          const mask = decodeMask(object.mask_rle.size, object.mask_rle.counts);
+          const [r, g, b] = hexToRgb(objectColors[object.obj_id] ?? "#1e90ff");
 
-        const xScale = maskWidth / drawWidth;
-        const yScale = maskHeight / drawHeight;
-        for (let y = 0; y < drawHeight; y += 1) {
-          const srcY = Math.min(maskHeight - 1, Math.floor((y + 0.5) * yScale));
-          const dstRow = y * drawWidth;
-          const srcRow = srcY * maskWidth;
-          for (let x = 0; x < drawWidth; x += 1) {
-            const srcX = Math.min(maskWidth - 1, Math.floor((x + 0.5) * xScale));
-            if (mask[srcRow + srcX] === 0) {
-              continue;
+          if (maskWidth === drawWidth && maskHeight === drawHeight) {
+            for (let i = 0; i < mask.length; i += 1) {
+              if (mask[i] === 0) {
+                continue;
+              }
+              const offset = i * 4;
+              data[offset] = Math.round(data[offset] * (1 - alpha) + r * alpha);
+              data[offset + 1] = Math.round(data[offset + 1] * (1 - alpha) + g * alpha);
+              data[offset + 2] = Math.round(data[offset + 2] * (1 - alpha) + b * alpha);
             }
-            const offset = (dstRow + x) * 4;
-            data[offset] = Math.round(data[offset] * (1 - alpha) + r * alpha);
-            data[offset + 1] = Math.round(data[offset + 1] * (1 - alpha) + g * alpha);
-            data[offset + 2] = Math.round(data[offset + 2] * (1 - alpha) + b * alpha);
+            continue;
+          }
+
+          const xScale = maskWidth / drawWidth;
+          const yScale = maskHeight / drawHeight;
+          for (let y = 0; y < drawHeight; y += 1) {
+            const srcY = Math.min(maskHeight - 1, Math.floor((y + 0.5) * yScale));
+            const dstRow = y * drawWidth;
+            const srcRow = srcY * maskWidth;
+            for (let x = 0; x < drawWidth; x += 1) {
+              const srcX = Math.min(maskWidth - 1, Math.floor((x + 0.5) * xScale));
+              if (mask[srcRow + srcX] === 0) {
+                continue;
+              }
+              const offset = (dstRow + x) * 4;
+              data[offset] = Math.round(data[offset] * (1 - alpha) + r * alpha);
+              data[offset + 1] = Math.round(data[offset + 1] * (1 - alpha) + g * alpha);
+              data[offset + 2] = Math.round(data[offset + 2] * (1 - alpha) + b * alpha);
+            }
           }
         }
+
+        context.putImageData(base, 0, 0);
       }
 
-      context.putImageData(base, 0, 0);
+      if (lastClick !== null) {
+        const px = Math.max(0, Math.min(drawWidth - 1, Math.round(lastClick.x * drawWidth)));
+        const py = Math.max(0, Math.min(drawHeight - 1, Math.round(lastClick.y * drawHeight)));
+        context.strokeStyle = lastClick.label === 1 ? "#22c55e" : "#ef4444";
+        context.lineWidth = 2;
+        context.beginPath();
+        context.arc(px, py, 7, 0, Math.PI * 2);
+        context.stroke();
+        context.beginPath();
+        context.moveTo(px - 10, py);
+        context.lineTo(px + 10, py);
+        context.moveTo(px, py - 10);
+        context.lineTo(px, py + 10);
+        context.stroke();
+      }
+
+      if (selectedObjId !== null) {
+        context.fillStyle = "rgba(0,0,0,0.55)";
+        context.fillRect(8, 8, 170, 24);
+        context.fillStyle = "#fff";
+        context.font = "14px monospace";
+        context.fillText(`Selected obj: ${selectedObjId}`, 14, 25);
+      }
     };
     image.src = frameUrl;
-  }, [frameUrl, width, height, objects, objectColors, visibilityByObjectId]);
+  }, [
+    frameUrl,
+    width,
+    height,
+    objects,
+    objectColors,
+    visibilityByObjectId,
+    lastClick,
+    selectedObjId,
+  ]);
 
   const emitPoint = (event: MouseEvent<HTMLCanvasElement>, label: 0 | 1) => {
     if (selectedObjId === null) {

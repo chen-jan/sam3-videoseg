@@ -63,3 +63,37 @@ class PropagationStartMessage(BaseModel):
     action: Literal["start"]
     direction: Literal["both", "forward", "backward"] = "both"
     start_frame_index: int | None = None
+
+
+ExportFormat = Literal["coco_instance", "yolo_segmentation", "binary_masks_png"]
+MergeMode = Literal["none", "group", "destructive_export"]
+
+
+class ExportObjectMeta(BaseModel):
+    obj_id: int
+    class_name: str = Field(min_length=1, default="object")
+    instance_name: str = ""
+
+
+class ExportMergeGroup(BaseModel):
+    name: str = Field(min_length=1)
+    obj_ids: list[int] = Field(default_factory=list)
+
+
+class ExportMergeConfig(BaseModel):
+    mode: MergeMode = "none"
+    groups: list[ExportMergeGroup] = Field(default_factory=list)
+
+
+class ExportScope(BaseModel):
+    frame_start: int | None = Field(default=None, ge=0)
+    frame_end: int | None = Field(default=None, ge=0)
+    include_images: bool = True
+
+
+class ExportRequest(BaseModel):
+    formats: list[ExportFormat] = Field(default_factory=lambda: ["coco_instance"])
+    object_meta: list[ExportObjectMeta] = Field(default_factory=list)
+    merge: ExportMergeConfig = Field(default_factory=ExportMergeConfig)
+    scope: ExportScope = Field(default_factory=ExportScope)
+    auto_propagate_if_incomplete: bool = False

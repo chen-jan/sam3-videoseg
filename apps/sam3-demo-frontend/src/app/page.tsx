@@ -3,29 +3,37 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import {
+  ApiError,
   addClickPrompt,
   addTextPrompt,
   buildFrameUrl,
   createObject,
   deleteSession,
+  exportSession,
   openPropagationSocket,
   removeObject,
   resetSession,
   uploadVideo,
 } from "../lib/api";
 import {
+  AppErrorInfo,
   ClickMode,
+  ExportFormat,
+  ExportRequest,
+  MergeMode,
   ObjectOutput,
   PointInput,
   PromptResponse,
   TrackedObject,
   UploadResponse,
+  WsErrorPayload,
 } from "../lib/types";
 import { FrameScrubber } from "../components/FrameScrubber";
 import { ObjectList } from "../components/ObjectList";
 import { PlaybackControls } from "../components/PlaybackControls";
 import { PromptPanel } from "../components/PromptPanel";
 import { VideoCanvas } from "../components/VideoCanvas";
+import { ExportPanel } from "../components/ExportPanel";
 
 const COLORS = [
   "#ff5733",
@@ -46,6 +54,74 @@ function colorForObjId(objId: number): string {
   return COLORS[Math.abs(objId) % COLORS.length];
 }
 
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function toAppError(error: unknown, context?: string): AppErrorInfo {
+  if (error instanceof ApiError) {
+    return {
+      code: error.code,
+      message: error.message,
+      details: error.details,
+      request_id: error.requestId,
+      status: error.status,
+      context,
+      ts: nowIso(),
+    };
+  }
+  if (typeof error === "object" && error !== null) {
+    const maybe = error as Record<string, unknown>;
+    return {
+      code: typeof maybe.code === "string" ? maybe.code : "UNKNOWN_ERROR",
+      message:
+        typeof maybe.message === "string"
+          ? maybe.message
+          : error instanceof Error
+            ? error.message
+            : String(error),
+      details: typeof maybe.details === "string" ? maybe.details : undefined,
+      request_id: typeof maybe.request_id === "string" ? maybe.request_id : undefined,
+      context,
+      ts: nowIso(),
+    };
+  }
+  return {
+    code: "UNKNOWN_ERROR",
+    message: error instanceof Error ? error.message : String(error),
+    context,
+    ts: nowIso(),
+  };
+}
+
+function parseMergeGroups(raw: string): { name: string; obj_ids: number[] }[] {
+  const groups: { name: string; obj_ids: number[] }[] = [];
+  const lines = raw
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+
+  for (const line of lines) {
+    const colonIdx = line.indexOf(":");
+    if (colonIdx <= 0) {
+      throw new Error(`Invalid merge group line: \"${line}\"`);
+    }
+    const name = line.slice(0, colonIdx).trim();
+    const idsRaw = line.slice(colonIdx + 1).trim();
+    const ids = idsRaw
+      .split(",")
+      .map((x) => x.trim())
+      .filter((x) => x.length > 0)
+      .map((x) => Number(x));
+    if (name.length === 0 || ids.length === 0 || ids.some((n) => !Number.isInteger(n))) {
+      throw new Error(`Invalid merge group line: \"${line}\"`);
+    }
+    groups.push({ name, obj_ids: ids as number[] });
+  }
+
+  return groups;
+}
+
 export default function Page() {
   const [session, setSession] = useState<UploadResponse | null>(null);
   const [currentFrame, setCurrentFrame] = useState(0);
@@ -57,6 +133,29 @@ export default function Page() {
   const [isPropagating, setIsPropagating] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [status, setStatus] = useState("Upload a video to start.");
+  const [propagationStartFrame, setPropagationStartFrame] = useState("");
+  const [latestError, setLatestError] = useState<AppErrorInfo | null>(null);
+  const [errorHistory, setErrorHistory] = useState<AppErrorInfo[]>([]);
+  const [lastClick, setLastClick] = useState<{
+    x: number;
+    y: number;
+    label: 0 | 1;
+    objId: number;
+    frameIndex: number;
+  } | null>(null);
+
+  const [exportFormats, setExportFormats] = useState<Record<ExportFormat, boolean>>({
+    coco_instance: true,
+    yolo_segmentation: true,
+    binary_masks_png: false,
+  });
+  const [mergeMode, setMergeMode] = useState<MergeMode>("none");
+  const [mergeGroupsText, setMergeGroupsText] = useState("");
+  const [exportFrameStart, setExportFrameStart] = useState("");
+  const [exportFrameEnd, setExportFrameEnd] = useState("");
+  const [exportIncludeImages, setExportIncludeImages] = useState(true);
+  const [autoPropagateForExport, setAutoPropagateForExport] = useState(true);
+  const [isExporting, setIsExporting] = useState(false);
 
   const wsRef = useRef<WebSocket | null>(null);
 
@@ -87,6 +186,17 @@ export default function Page() {
       ? null
       : buildFrameUrl(session.session_id, Math.max(0, currentFrame));
 
+  const currentFrameLastClick =
+    lastClick !== null && lastClick.frameIndex === currentFrame
+      ? { x: lastClick.x, y: lastClick.y, label: lastClick.label, objId: lastClick.objId }
+      : null;
+
+  const pushError = (error: unknown, context?: string) => {
+    const next = toAppError(error, context);
+    setLatestError(next);
+    setErrorHistory((prev) => [next, ...prev].slice(0, 20));
+  };
+
   const closePropagationSocket = () => {
     if (wsRef.current !== null) {
       wsRef.current.close();
@@ -103,10 +213,13 @@ export default function Page() {
       let changed = false;
       for (const output of outputs) {
         if (next[output.obj_id] === undefined) {
+          const manual = output.obj_id < 0;
           next[output.obj_id] = {
             objId: output.obj_id,
             color: colorForObjId(output.obj_id),
             visible: true,
+            className: manual ? "manual_object" : "detected_object",
+            instanceName: `obj_${output.obj_id}`,
           };
           changed = true;
         }
@@ -138,10 +251,12 @@ export default function Page() {
       setSelectedObjId(null);
       setIsPropagating(false);
       setIsPlaying(false);
+      setLastClick(null);
       setStatus(
         `Ready: ${uploaded.processing_num_frames} frames @ ${uploaded.processing_fps.toFixed(2)} fps`
       );
     } catch (error) {
+      pushError(error, "upload");
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Upload failed: ${message}`);
     }
@@ -161,6 +276,7 @@ export default function Page() {
       applyPromptResponse(response);
       setStatus("Text prompt applied.");
     } catch (error) {
+      pushError(error, "text_prompt");
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Text prompt failed: ${message}`);
     }
@@ -176,6 +292,8 @@ export default function Page() {
         objId: response.obj_id,
         color: colorForObjId(response.obj_id),
         visible: true,
+        className: "manual_object",
+        instanceName: `manual_${Math.abs(response.obj_id)}`,
       };
       setObjectsById((prev) => ({ ...prev, [object.objId]: object }));
       setSelectedObjId(object.objId);
@@ -184,6 +302,7 @@ export default function Page() {
           `Now click on the image: left=positive, right=negative.`
       );
     } catch (error) {
+      pushError(error, "add_object");
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Failed to add object: ${message}`);
     }
@@ -194,6 +313,15 @@ export default function Page() {
       setStatus("Select or create an object first.");
       return;
     }
+
+    setLastClick({
+      x: point.x,
+      y: point.y,
+      label: point.label,
+      objId: selectedObjId,
+      frameIndex: currentFrame,
+    });
+
     try {
       const response = await addClickPrompt(session.session_id, {
         frame_index: currentFrame,
@@ -201,8 +329,11 @@ export default function Page() {
         points: [point],
       });
       applyPromptResponse(response);
-      setStatus(`Applied ${point.label === 1 ? "positive" : "negative"} click.`);
+      setStatus(
+        `Applied ${point.label === 1 ? "positive" : "negative"} click on object ${selectedObjId}.`
+      );
     } catch (error) {
+      pushError(error, "click_prompt");
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Click prompt failed: ${message}`);
     }
@@ -232,6 +363,7 @@ export default function Page() {
       }
       setStatus(`Removed object ${objId}.`);
     } catch (error) {
+      pushError(error, "remove_object");
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Remove failed: ${message}`);
     }
@@ -248,8 +380,10 @@ export default function Page() {
       setObjectsById({});
       setSelectedObjId(null);
       setIsPropagating(false);
+      setLastClick(null);
       setStatus("Session reset.");
     } catch (error) {
+      pushError(error, "reset_session");
       const message = error instanceof Error ? error.message : String(error);
       setStatus(`Reset failed: ${message}`);
     }
@@ -259,15 +393,31 @@ export default function Page() {
     if (session === null) {
       return;
     }
+
+    let startFrame: number | null = null;
+    if (propagationStartFrame.trim() !== "") {
+      const parsed = Number(propagationStartFrame);
+      if (!Number.isInteger(parsed) || parsed < 0) {
+        pushError(new Error("Propagation start frame must be an integer >= 0"), "propagation");
+        setStatus("Propagation start frame is invalid.");
+        return;
+      }
+      startFrame = parsed;
+    }
+
     closePropagationSocket();
     setIsPropagating(true);
-    setStatus("Propagation started...");
+    setStatus(
+      startFrame === null
+        ? "Propagation started (default start frame)."
+        : `Propagation started from frame ${startFrame}.`
+    );
 
     wsRef.current = openPropagationSocket(
       session.session_id,
       {
         direction: "both",
-        start_frame_index: null,
+        start_frame_index: startFrame,
       },
       {
         onFrame: (event) => {
@@ -284,13 +434,87 @@ export default function Page() {
         },
         onError: (event) => {
           setIsPropagating(false);
-          const message =
-            event instanceof Error ? event.message : `${event.code}: ${event.message}`;
-          setStatus(`Propagation error: ${message}`);
+          if (event instanceof Error) {
+            pushError(event, "propagation");
+            setStatus(`Propagation error: ${event.message}`);
+          } else {
+            const wsErr = event as WsErrorPayload;
+            pushError(
+              {
+                code: wsErr.code,
+                message: wsErr.message,
+                details: wsErr.details,
+                request_id: wsErr.request_id,
+              },
+              "propagation"
+            );
+            setStatus(`Propagation error: ${wsErr.code}: ${wsErr.message}`);
+          }
           closePropagationSocket();
         },
       }
     );
+  };
+
+  const handleDownloadExport = async () => {
+    if (session === null) {
+      return;
+    }
+
+    try {
+      const selectedFormats = (Object.keys(exportFormats) as ExportFormat[]).filter(
+        (format) => exportFormats[format]
+      );
+      if (selectedFormats.length === 0) {
+        throw new Error("Select at least one export format.");
+      }
+
+      const mergeGroups = parseMergeGroups(mergeGroupsText);
+      const frameStart = exportFrameStart.trim() === "" ? null : Number(exportFrameStart);
+      const frameEnd = exportFrameEnd.trim() === "" ? null : Number(exportFrameEnd);
+      if (
+        (frameStart !== null && (!Number.isInteger(frameStart) || frameStart < 0)) ||
+        (frameEnd !== null && (!Number.isInteger(frameEnd) || frameEnd < 0))
+      ) {
+        throw new Error("Export frame range must use integers >= 0.");
+      }
+
+      const request: ExportRequest = {
+        formats: selectedFormats,
+        object_meta: objects.map((obj) => ({
+          obj_id: obj.objId,
+          class_name: obj.className.trim() || "object",
+          instance_name: obj.instanceName.trim() || `obj_${obj.objId}`,
+        })),
+        merge: {
+          mode: mergeMode,
+          groups: mergeGroups,
+        },
+        scope: {
+          frame_start: frameStart,
+          frame_end: frameEnd,
+          include_images: exportIncludeImages,
+        },
+        auto_propagate_if_incomplete: autoPropagateForExport,
+      };
+
+      setIsExporting(true);
+      setStatus("Preparing export archive...");
+      const blob = await exportSession(session.session_id, request);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `sam3-export-${session.session_id.slice(0, 8)}.zip`;
+      a.click();
+      URL.revokeObjectURL(url);
+      setStatus("Export downloaded.");
+    } catch (error) {
+      pushError(error, "export");
+      const message = error instanceof Error ? error.message : String(error);
+      setStatus(`Export failed: ${message}`);
+    } finally {
+      setIsExporting(false);
+    }
   };
 
   useEffect(() => {
@@ -345,7 +569,7 @@ export default function Page() {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "320px minmax(0, 1fr)",
+          gridTemplateColumns: "380px minmax(0, 1fr)",
           gap: 16,
         }}
       >
@@ -356,12 +580,16 @@ export default function Page() {
             clickMode={clickMode}
             isPropagating={isPropagating}
             status={status}
+            propagationStartFrame={propagationStartFrame}
+            latestError={latestError}
+            errorHistory={errorHistory}
             onTextPromptChange={setTextPrompt}
             onSubmitTextPrompt={() => void handleSubmitTextPrompt()}
             onAddObject={() => void handleAddObject()}
             onRunPropagation={handlePropagation}
             onReset={() => void handleReset()}
             onClickModeChange={setClickMode}
+            onPropagationStartFrameChange={setPropagationStartFrame}
           />
 
           <ObjectList
@@ -374,7 +602,41 @@ export default function Page() {
                 [objId]: { ...prev[objId], visible: !prev[objId].visible },
               }));
             }}
+            onRenameClass={(objId, className) => {
+              setObjectsById((prev) => ({
+                ...prev,
+                [objId]: { ...prev[objId], className },
+              }));
+            }}
+            onRenameInstance={(objId, instanceName) => {
+              setObjectsById((prev) => ({
+                ...prev,
+                [objId]: { ...prev[objId], instanceName },
+              }));
+            }}
             onRemove={(objId) => void handleRemoveObject(objId)}
+          />
+
+          <ExportPanel
+            disabled={session === null}
+            isExporting={isExporting}
+            formats={exportFormats}
+            mergeMode={mergeMode}
+            mergeGroupsText={mergeGroupsText}
+            frameStart={exportFrameStart}
+            frameEnd={exportFrameEnd}
+            includeImages={exportIncludeImages}
+            autoPropagate={autoPropagateForExport}
+            onFormatChange={(format, checked) => {
+              setExportFormats((prev) => ({ ...prev, [format]: checked }));
+            }}
+            onMergeModeChange={setMergeMode}
+            onMergeGroupsTextChange={setMergeGroupsText}
+            onFrameStartChange={setExportFrameStart}
+            onFrameEndChange={setExportFrameEnd}
+            onIncludeImagesChange={setExportIncludeImages}
+            onAutoPropagateChange={setAutoPropagateForExport}
+            onDownload={() => void handleDownloadExport()}
           />
         </div>
 
@@ -388,6 +650,7 @@ export default function Page() {
             visibilityByObjectId={objectVisibility}
             selectedObjId={selectedObjId}
             clickMode={clickMode}
+            lastClick={currentFrameLastClick}
             onPointPrompt={(point) => void handlePointPrompt(point)}
           />
 
@@ -397,9 +660,7 @@ export default function Page() {
             onStepBackward={() => setCurrentFrame((prev) => Math.max(0, prev - 1))}
             onStepForward={() => {
               if (session === null) return;
-              setCurrentFrame((prev) =>
-                Math.min(session.processing_num_frames - 1, prev + 1)
-              );
+              setCurrentFrame((prev) => Math.min(session.processing_num_frames - 1, prev + 1));
             }}
             processingFps={session?.processing_fps ?? 0}
           />

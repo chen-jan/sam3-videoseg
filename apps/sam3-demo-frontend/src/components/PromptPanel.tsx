@@ -1,4 +1,4 @@
-import { ClickMode } from "../lib/types";
+import { AppErrorInfo, ClickMode } from "../lib/types";
 
 interface PromptPanelProps {
   textPrompt: string;
@@ -6,12 +6,65 @@ interface PromptPanelProps {
   clickMode: ClickMode;
   isPropagating: boolean;
   status: string;
+  propagationStartFrame: string;
+  latestError: AppErrorInfo | null;
+  errorHistory: AppErrorInfo[];
   onTextPromptChange: (value: string) => void;
   onSubmitTextPrompt: () => void;
   onAddObject: () => void;
   onRunPropagation: () => void;
   onReset: () => void;
   onClickModeChange: (mode: ClickMode) => void;
+  onPropagationStartFrameChange: (value: string) => void;
+}
+
+function ErrorPanel({ latestError, history }: { latestError: AppErrorInfo | null; history: AppErrorInfo[] }) {
+  if (!latestError) {
+    return null;
+  }
+
+  return (
+    <div style={{ border: "1px solid #fecaca", borderRadius: 8, padding: 10, background: "#fff1f2" }}>
+      <div style={{ fontWeight: 600, color: "#991b1b", marginBottom: 6 }}>Latest Error</div>
+      <div style={{ fontFamily: "monospace", fontSize: 12, color: "#7f1d1d" }}>
+        <div>
+          [{latestError.code}] {latestError.message}
+        </div>
+        {latestError.details ? <div>{latestError.details}</div> : null}
+        {latestError.request_id ? <div>request_id: {latestError.request_id}</div> : null}
+      </div>
+      {history.length > 1 ? (
+        <details style={{ marginTop: 8 }}>
+          <summary style={{ cursor: "pointer", color: "#7f1d1d" }}>
+            Error history ({history.length})
+          </summary>
+          <div style={{ display: "grid", gap: 6, marginTop: 6 }}>
+            {history.map((err, idx) => (
+              <div
+                key={`${err.ts}-${idx}`}
+                style={{
+                  border: "1px solid #fecdd3",
+                  borderRadius: 6,
+                  padding: 6,
+                  background: "#fff",
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                  color: "#881337",
+                }}
+              >
+                <div>{err.ts}</div>
+                <div>
+                  [{err.code}] {err.message}
+                </div>
+                {err.context ? <div>context: {err.context}</div> : null}
+                {err.request_id ? <div>request_id: {err.request_id}</div> : null}
+              </div>
+            ))}
+          </div>
+        </details>
+      ) : null}
+    </div>
+  );
 }
 
 export function PromptPanel({
@@ -20,12 +73,16 @@ export function PromptPanel({
   clickMode,
   isPropagating,
   status,
+  propagationStartFrame,
+  latestError,
+  errorHistory,
   onTextPromptChange,
   onSubmitTextPrompt,
   onAddObject,
   onRunPropagation,
   onReset,
   onClickModeChange,
+  onPropagationStartFrameChange,
 }: PromptPanelProps) {
   return (
     <div style={{ border: "1px solid #ddd", borderRadius: 8, padding: 12 }}>
@@ -68,6 +125,22 @@ export function PromptPanel({
           </small>
         </div>
 
+        <label style={{ display: "grid", gap: 4 }}>
+          <span>Propagation Start Frame (optional)</span>
+          <input
+            type="number"
+            min={0}
+            step={1}
+            value={propagationStartFrame}
+            onChange={(event) => onPropagationStartFrameChange(event.target.value)}
+            placeholder="Leave empty for default"
+          />
+        </label>
+        <small style={{ color: "#666", lineHeight: 1.4 }}>
+          Propagation behavior: if start frame is 100 and direction is both, it runs forward
+          to the end and backward to frame 0.
+        </small>
+
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={onRunPropagation} disabled={isPropagating}>
             {isPropagating ? "Propagating..." : "Run Propagation"}
@@ -82,6 +155,8 @@ export function PromptPanel({
         </small>
 
         <div style={{ minHeight: 24, color: "#374151" }}>{status}</div>
+
+        <ErrorPanel latestError={latestError} history={errorHistory} />
       </div>
     </div>
   );

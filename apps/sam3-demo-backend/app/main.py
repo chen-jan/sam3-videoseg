@@ -1,18 +1,30 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from pathlib import Path
 
-from fastapi import HTTPException, FastAPI, File, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import (
+    HTTPException,
+    FastAPI,
+    File,
+    Request,
+    Response,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import ValidationError
 
 from app.config import Settings, ensure_directories
-from app.errors import ErrorCode, http_error
+from app.errors import ErrorCode, error_detail, http_error
 from app.models import (
     ClickPromptRequest,
     CreateObjectResponse,
+    ExportRequest,
     OperationResponse,
     PromptResponse,
     PropagationStartMessage,
@@ -39,6 +51,7 @@ settings = Settings()
 ensure_directories(settings)
 session_store = SessionStore()
 sam3_service = Sam3Service(session_store=session_store)
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="SAM3 Demo Backend", version="0.1.0")
 app.add_middleware(
@@ -48,6 +61,63 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    request_id = request.headers.get("X-Request-ID", uuid.uuid4().hex)
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["X-Request-ID"] = request_id
+    return response
+
+
+@app.exception_handler(HTTPException)
+async def handle_http_exception(request: Request, exc: HTTPException):
+    request_id = getattr(request.state, "request_id", uuid.uuid4().hex)
+    if isinstance(exc.detail, dict):
+        detail = dict(exc.detail)
+    else:
+        detail = error_detail(ErrorCode.BAD_REQUEST, str(exc.detail))
+    detail.setdefault("request_id", request_id)
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": detail},
+        headers={"X-Request-ID": request_id},
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def handle_validation_exception(request: Request, exc: RequestValidationError):
+    request_id = getattr(request.state, "request_id", uuid.uuid4().hex)
+    detail = error_detail(
+        ErrorCode.BAD_REQUEST,
+        "Invalid request payload",
+        details=str(exc),
+        request_id=request_id,
+    )
+    return JSONResponse(
+        status_code=422,
+        content={"detail": detail},
+        headers={"X-Request-ID": request_id},
+    )
+
+
+@app.exception_handler(Exception)
+async def handle_unexpected_exception(request: Request, exc: Exception):
+    request_id = getattr(request.state, "request_id", uuid.uuid4().hex)
+    logger.exception("Unhandled server error request_id=%s", request_id)
+    detail = error_detail(
+        ErrorCode.INTERNAL_ERROR,
+        "Internal server error",
+        details=str(exc),
+        request_id=request_id,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": detail},
+        headers={"X-Request-ID": request_id},
+    )
 
 
 def _require_session(session_id: str) -> SessionRecord:
@@ -193,6 +263,7 @@ async def upload_video(file: UploadFile = File(...)) -> UploadResponse:
         if frames_dir is not None:
             cleanup_path(frames_dir)
         cleanup_path(upload_path)
+        logger.exception("upload_failed filename=%s", filename)
         raise http_error(
             500,
             ErrorCode.VIDEO_PROCESSING_FAILED,
@@ -221,12 +292,27 @@ def add_text_prompt(session_id: str, req: TextPromptRequest) -> PromptResponse:
     if not text:
         raise http_error(400, ErrorCode.BAD_REQUEST, "Text prompt cannot be empty")
 
-    frame_index, objects = sam3_service.add_text_prompt(
-        session_id=session_id,
-        frame_index=req.frame_index,
-        text=text,
-        reset_first=req.reset_first,
-    )
+    try:
+        frame_index, objects = sam3_service.add_text_prompt(
+            session_id=session_id,
+            frame_index=req.frame_index,
+            text=text,
+            reset_first=req.reset_first,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "text_prompt_failed session_id=%s frame_index=%s",
+            session_id,
+            req.frame_index,
+        )
+        raise http_error(
+            500,
+            ErrorCode.MODEL_RUNTIME_ERROR,
+            "Text prompt failed",
+            details=str(exc),
+        )
     return PromptResponse(frame_index=frame_index, objects=objects)
 
 
@@ -247,12 +333,28 @@ def add_click_prompt(session_id: str, req: ClickPromptRequest) -> PromptResponse
     points = [(point.x, point.y, int(point.label)) for point in req.points]
     _validate_points(points)
 
-    frame_index, objects = sam3_service.add_click_prompt(
-        session_id=session_id,
-        frame_index=req.frame_index,
-        obj_id=req.obj_id,
-        points=points,
-    )
+    try:
+        frame_index, objects = sam3_service.add_click_prompt(
+            session_id=session_id,
+            frame_index=req.frame_index,
+            obj_id=req.obj_id,
+            points=points,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "click_prompt_failed session_id=%s frame_index=%s obj_id=%s",
+            session_id,
+            req.frame_index,
+            req.obj_id,
+        )
+        raise http_error(
+            500,
+            ErrorCode.MODEL_RUNTIME_ERROR,
+            "Click prompt failed",
+            details=str(exc),
+        )
     return PromptResponse(frame_index=frame_index, objects=objects)
 
 
@@ -270,6 +372,30 @@ def reset_session(session_id: str) -> OperationResponse:
     return OperationResponse(ok=True)
 
 
+@app.post("/api/sessions/{session_id}/exports")
+def export_session_data(session_id: str, req: ExportRequest) -> Response:
+    record = _require_session(session_id)
+    try:
+        archive_bytes = sam3_service.export_session(session_id=session_id, record=record, req=req)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("export_failed session_id=%s", session_id)
+        raise http_error(
+            500,
+            ErrorCode.EXPORT_FAILED,
+            "Failed to export session data",
+            details=str(exc),
+        )
+
+    filename = f"sam3-export-{session_id[:8]}.zip"
+    return Response(
+        content=archive_bytes,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.delete("/api/sessions/{session_id}", response_model=OperationResponse)
 def delete_session(session_id: str) -> OperationResponse:
     record = _require_session(session_id)
@@ -285,6 +411,8 @@ def delete_session(session_id: str) -> OperationResponse:
 @app.websocket("/api/sessions/{session_id}/propagate")
 async def propagate(websocket: WebSocket, session_id: str) -> None:
     await websocket.accept()
+    ws_request_id = uuid.uuid4().hex
+    start_msg: PropagationStartMessage | None = None
     try:
         record = _require_session(session_id)
         start_raw = await websocket.receive_json()
@@ -317,14 +445,24 @@ async def propagate(websocket: WebSocket, session_id: str) -> None:
                 "type": "error",
                 "code": ErrorCode.BAD_REQUEST,
                 "message": f"Invalid websocket payload: {exc}",
+                "request_id": ws_request_id,
             }
         )
     except Exception as exc:
+        logger.exception(
+            "propagation_failed session_id=%s direction=%s start_frame_index=%s request_id=%s",
+            session_id,
+            None if start_msg is None else start_msg.direction,
+            None if start_msg is None else start_msg.start_frame_index,
+            ws_request_id,
+        )
         await websocket.send_json(
             {
                 "type": "error",
-                "code": ErrorCode.BAD_REQUEST,
-                "message": str(exc),
+                "code": ErrorCode.MODEL_RUNTIME_ERROR,
+                "message": "Propagation failed",
+                "details": str(exc),
+                "request_id": ws_request_id,
             }
         )
     finally:

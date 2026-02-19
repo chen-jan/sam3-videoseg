@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+from typing import Any
 
+from app.export_utils import build_export_archive
 from app.mask_codec import encode_sam3_outputs
-from app.session_store import SessionStore
+from app.models import ExportRequest
+from app.session_store import SessionRecord, SessionStore
+
+
+logger = logging.getLogger(__name__)
 
 
 class Sam3Service:
@@ -60,6 +67,13 @@ class Sam3Service:
             self.session_store.clear_click_history(session_id)
             self.session_store.reset_object_counter(session_id)
 
+        logger.info(
+            "text_prompt session_id=%s frame_index=%s text=%s reset_first=%s",
+            session_id,
+            frame_index,
+            text,
+            reset_first,
+        )
         response = predictor.handle_request(
             request={
                 "type": "add_prompt",
@@ -78,12 +92,20 @@ class Sam3Service:
         points: list[tuple[float, float, int]],
     ) -> tuple[int, list[dict[str, object]]]:
         predictor = self._ensure_predictor()
+        self._seed_frame_cache_if_needed(session_id=session_id, frame_index=frame_index)
         self.session_store.bump_generation(session_id)
         all_points = self.session_store.add_click_points(
             session_id=session_id,
             obj_id=obj_id,
             frame_index=frame_index,
             points=points,
+        )
+        logger.info(
+            "click_prompt session_id=%s frame_index=%s obj_id=%s num_points=%s",
+            session_id,
+            frame_index,
+            obj_id,
+            len(points),
         )
         point_coords = [[x, y] for x, y, _ in all_points]
         point_labels = [label for _, _, label in all_points]
@@ -149,3 +171,114 @@ class Sam3Service:
             frame_index = int(response["frame_index"])
             objects = encode_sam3_outputs(response["outputs"])
             yield frame_index, objects
+
+    def export_session(
+        self,
+        session_id: str,
+        record: SessionRecord,
+        req: ExportRequest,
+    ) -> bytes:
+        predictor = self._ensure_predictor()
+        state = self._get_inference_state(session_id)
+
+        frame_start = req.scope.frame_start if req.scope.frame_start is not None else 0
+        frame_end = (
+            req.scope.frame_end if req.scope.frame_end is not None else record.num_frames - 1
+        )
+        frame_start = max(0, min(frame_start, record.num_frames - 1))
+        frame_end = max(0, min(frame_end, record.num_frames - 1))
+        if frame_start > frame_end:
+            frame_start, frame_end = frame_end, frame_start
+
+        if req.auto_propagate_if_incomplete:
+            missing = [
+                idx
+                for idx in range(frame_start, frame_end + 1)
+                if idx not in state.get("cached_frame_outputs", {})
+            ]
+            if missing:
+                logger.info(
+                    "export_auto_propagate session_id=%s start=%s end=%s missing=%s",
+                    session_id,
+                    frame_start,
+                    frame_end,
+                    len(missing),
+                )
+                for _ in predictor.handle_stream_request(
+                    request={
+                        "type": "propagate_in_video",
+                        "session_id": session_id,
+                        "propagation_direction": "both",
+                        "start_frame_index": frame_start,
+                    }
+                ):
+                    pass
+
+        return build_export_archive(
+            record=record,
+            cached_frame_outputs=state.get("cached_frame_outputs", {}),
+            req=req,
+        )
+
+    def _seed_frame_cache_if_needed(self, session_id: str, frame_index: int) -> None:
+        state = self._get_inference_state(session_id)
+        cached = state.get("cached_frame_outputs", {})
+        if frame_index in cached:
+            return
+
+        predictor = self._ensure_predictor()
+        model = getattr(predictor, "model", None)
+        if model is not None and hasattr(model, "_run_single_frame_inference"):
+            logger.info(
+                "auto_seed_frame_cache_single_frame session_id=%s frame_index=%s",
+                session_id,
+                frame_index,
+            )
+            try:
+                model._run_single_frame_inference(state, frame_index, reverse=False)
+            except Exception:
+                logger.warning(
+                    "single_frame_seed_failed session_id=%s frame_index=%s",
+                    session_id,
+                    frame_index,
+                    exc_info=True,
+                )
+
+        cached = state.get("cached_frame_outputs", {})
+        if frame_index in cached:
+            return
+
+        logger.info(
+            "auto_seed_frame_cache_stream session_id=%s frame_index=%s",
+            session_id,
+            frame_index,
+        )
+        try:
+            stream = predictor.handle_stream_request(
+                request={
+                    "type": "propagate_in_video",
+                    "session_id": session_id,
+                    "propagation_direction": "forward",
+                    "start_frame_index": frame_index,
+                }
+            )
+            next(stream, None)
+        except Exception:
+            logger.warning(
+                "stream_seed_failed session_id=%s frame_index=%s",
+                session_id,
+                frame_index,
+                exc_info=True,
+            )
+
+        cached = state.get("cached_frame_outputs", {})
+        if frame_index not in cached:
+            raise RuntimeError(
+                f"Unable to seed cache for frame {frame_index}. "
+                "Add a text prompt or run propagation first."
+            )
+
+    def _get_inference_state(self, session_id: str) -> dict[str, Any]:
+        predictor = self._ensure_predictor()
+        session = predictor._get_session(session_id)
+        return session["state"]
