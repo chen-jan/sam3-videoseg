@@ -271,7 +271,7 @@ export default function Page() {
       const response = await addTextPrompt(session.session_id, {
         frame_index: currentFrame,
         text: textPrompt,
-        reset_first: true,
+        reset_first: false,
       });
       applyPromptResponse(response);
       setStatus("Text prompt applied.");

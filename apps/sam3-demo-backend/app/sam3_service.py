@@ -65,7 +65,6 @@ class Sam3Service:
                 request={"type": "reset_session", "session_id": session_id}
             )
             self.session_store.clear_click_history(session_id)
-            self.session_store.reset_object_counter(session_id)
 
         logger.info(
             "text_prompt session_id=%s frame_index=%s text=%s reset_first=%s",
@@ -80,6 +79,7 @@ class Sam3Service:
                 "session_id": session_id,
                 "frame_index": frame_index,
                 "text": text,
+                "reset_state": reset_first,
             }
         )
         return int(response["frame_index"]), encode_sam3_outputs(response["outputs"])
@@ -141,7 +141,6 @@ class Sam3Service:
             request={"type": "reset_session", "session_id": session_id}
         )
         self.session_store.clear_click_history(session_id)
-        self.session_store.reset_object_counter(session_id)
 
     def close_session(self, session_id: str) -> None:
         predictor = self._ensure_predictor()
@@ -157,6 +156,10 @@ class Sam3Service:
         generation: int,
     ):
         predictor = self._ensure_predictor()
+        self._ensure_cache_entries_for_partial_propagation(
+            session_id=session_id,
+            predictor=predictor,
+        )
         request = {
             "type": "propagate_in_video",
             "session_id": session_id,
@@ -171,6 +174,43 @@ class Sam3Service:
             frame_index = int(response["frame_index"])
             objects = encode_sam3_outputs(response["outputs"])
             yield frame_index, objects
+
+    def _ensure_cache_entries_for_partial_propagation(self, session_id: str, predictor) -> None:
+        state = self._get_inference_state(session_id)
+        model = getattr(predictor, "model", None)
+        if model is None or not hasattr(model, "parse_action_history_for_propagation"):
+            return
+
+        try:
+            propagation_type, _ = model.parse_action_history_for_propagation(state)
+        except Exception:
+            logger.warning(
+                "unable_to_parse_action_history_for_propagation session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            return
+
+        if propagation_type != "propagation_partial":
+            return
+
+        cached_frame_outputs = state.setdefault("cached_frame_outputs", {})
+        num_frames = int(state.get("num_frames", 0))
+        if num_frames <= 0:
+            return
+
+        missing_frame_count = 0
+        for frame_idx in range(num_frames):
+            if frame_idx not in cached_frame_outputs:
+                cached_frame_outputs[frame_idx] = {}
+                missing_frame_count += 1
+
+        if missing_frame_count > 0:
+            logger.info(
+                "seeded_missing_cached_frame_outputs session_id=%s missing_frames=%s",
+                session_id,
+                missing_frame_count,
+            )
 
     def export_session(
         self,

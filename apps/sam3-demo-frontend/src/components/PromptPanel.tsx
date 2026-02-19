@@ -39,6 +39,9 @@ export function PromptPanel({
             onChange={(event) => onTextPromptChange(event.target.value)}
             placeholder="e.g. person in red shirt"
           />
+          <small style={{ color: "#666" }}>
+            Text prompts are additive and keep existing objects in the session.
+          </small>
         </label>
         <button onClick={onSubmitTextPrompt}>Apply Text Prompt</button>
         <button onClick={onAddObject}>+ Add Object (for click prompts)</button>

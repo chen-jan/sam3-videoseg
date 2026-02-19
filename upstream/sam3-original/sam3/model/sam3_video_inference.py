@@ -844,6 +844,7 @@ class Sam3VideoInference(Sam3VideoBase):
         text_str=None,
         boxes_xywh=None,
         box_labels=None,
+        reset_state=True,
     ):
         """
         Add text, point or box prompts on a single frame. This method returns the inference
@@ -862,8 +863,9 @@ class Sam3VideoInference(Sam3VideoBase):
             f"{frame_idx=} is out of range for a total of {num_frames} frames"
         )
 
-        # since it's a semantic prompt, we start over
-        self.reset_state(inference_state)
+        # semantic prompts usually reset state, but additive mode can keep existing objects
+        if reset_state:
+            self.reset_state(inference_state)
 
         # 1) add text prompt
         if text_str is not None and text_str != "visual":
@@ -1368,6 +1370,7 @@ class Sam3VideoInferenceWithInstanceInteractivity(Sam3VideoInference):
         point_labels=None,
         obj_id=None,
         rel_coordinates=True,
+        reset_state=True,
     ):
         if points is not None:
             # Tracker instance prompts
@@ -1394,6 +1397,7 @@ class Sam3VideoInferenceWithInstanceInteractivity(Sam3VideoInference):
                 text_str=text_str,
                 boxes_xywh=boxes_xywh,
                 box_labels=box_labels,
+                reset_state=reset_state,
             )
 
     @torch.inference_mode()
